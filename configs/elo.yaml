@@ -1,0 +1,52 @@
+# Elo rating system configuration.
+#
+# These defaults are reasonable starting points drawn from established
+# football-Elo implementations (clubelo.com, World Football Elo Ratings,
+# FiveThirtyEight's SPI), not yet tuned against this project's own data.
+# Phase 3 backtests Elo-derived match probabilities against log loss/Brier/
+# RPS and should revisit these values empirically rather than trust them
+# as-is - see README "Phase 3" once written.
+
+initial_rating: 1500          # anchor rating for the very first season in the dataset,
+                                # where no incumbent ratings exist yet to compare against
+
+k_factor: 20                   # how much one match result moves a rating.
+                                # Standard chess K=32 is tuned for individual
+                                # skill measured over many games; football
+                                # implementations commonly use a smaller K
+                                # (20-25) since team strength changes more
+                                # slowly than an individual's form.
+
+home_advantage: 100             # points added to the home team's rating
+                                # inside the expected-score formula only
+                                # (does not persist on the team's actual
+                                # rating). ~100 Elo points is the commonly
+                                # cited home-advantage magnitude in football
+                                # Elo systems.
+
+use_goal_difference_multiplier: true  # scale K by margin of victory (a 4-0
+                                        # win says more about the gap in
+                                        # quality than a 1-0 win) using the
+                                        # World Football Elo Ratings formula
+
+promoted_team_penalty: 150      # a team with no prior rating in this dataset
+                                  # (promoted from the Championship, or first
+                                  # ever appearance in the data) starts at
+                                  # (mean of all currently-rated teams) minus
+                                  # this penalty, reflecting that newly
+                                  # promoted teams are typically weaker than
+                                  # the incumbent top-flight average. Not yet
+                                  # empirically tuned - see Phase 3.
+
+season_shrinkage: 0.33          # at each season boundary, every team's
+                                  # rating regresses this fraction of the way
+                                  # toward the current league mean, before
+                                  # that season's matches are processed.
+                                  # Reflects squad turnover (transfers,
+                                  # managerial changes) over the summer break
+                                  # reducing confidence in the rating a team
+                                  # ended the previous season with. Also the
+                                  # mechanism by which a relegated team that
+                                  # returns to the league later carries
+                                  # forward a (partially regressed) rating
+                                  # rather than an arbitrary reset.

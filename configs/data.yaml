@@ -1,0 +1,22 @@
+# Data acquisition configuration.
+#
+# Primary historical source: football-data.co.uk (England, division E0 =
+# Premier League). That source is currently unreachable from this project's
+# development environment (TLS-layer connection failures across every client
+# tried - see README.md "Data" section), so we operationally source from a
+# Kaggle mirror of the same data instead. If football-data.co.uk becomes
+# reachable again, `kaggle_dataset` can be swapped for a direct-download
+# source without changing anything downstream of src/data/validate.py.
+
+kaggle_dataset: "irkaal/english-premier-league-results"
+
+raw_dir: "data/raw/kaggle_epl"
+processed_path: "data/processed/matches.parquet"
+team_name_map_path: "data/external/team_name_map.csv"
+
+# Current-season live refresh (Phase 7) - separate source, separate script.
+live_source:
+  provider: "football-data.org"
+  competition_code: "PL"
+  # API key is read from the FOOTBALL_DATA_ORG_KEY environment variable,
+  # never committed to this file.
