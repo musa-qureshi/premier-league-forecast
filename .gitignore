@@ -1,0 +1,33 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- Data (regeneratable from ingestion pipeline / too large to commit) ---
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# --- Kaggle credentials - never commit ---
+kaggle.json
+.kaggle/
+
+# --- Notebooks ---
+.ipynb_checkpoints/
+
+# --- Frontend ---
+app/frontend/node_modules/
+app/frontend/dist/
+
+# --- Env / secrets ---
+.env
+
+# --- OS / IDE ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
