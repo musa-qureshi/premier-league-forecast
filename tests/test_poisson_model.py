@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models.poisson_model import DixonColesModel, dixon_coles_tau
+from src.models.poisson_model import DixonColesModel, dixon_coles_tau, top_scorelines
 
 
 class TestDixonColesTau:
@@ -174,3 +174,35 @@ class TestScoreGridAndProba:
 
         actual_grid = model.predict_score_grid("Alpha", "Bravo")
         assert np.allclose(actual_grid, expected_grid, atol=1e-9)
+
+
+class TestTopScorelines:
+    def test_returns_k_results_sorted_by_probability_descending(self):
+        grid = np.zeros((4, 4))
+        grid[1, 0] = 0.3
+        grid[1, 1] = 0.25
+        grid[0, 0] = 0.2
+        grid[2, 1] = 0.1
+        grid[0, 1] = 0.05
+        grid /= grid.sum()
+
+        result = top_scorelines(grid, k=3)
+        assert len(result) == 3
+        assert result[0][:2] == (1, 0)
+        assert result[1][:2] == (1, 1)
+        assert result[2][:2] == (0, 0)
+        probs = [r[2] for r in result]
+        assert probs == sorted(probs, reverse=True)
+
+    def test_probabilities_match_grid_values(self):
+        grid = np.zeros((3, 3))
+        grid[2, 1] = 0.6
+        grid[0, 0] = 0.4
+        result = top_scorelines(grid, k=2)
+        assert result[0] == (2, 1, 0.6)
+        assert result[1] == (0, 0, 0.4)
+
+    def test_k_larger_than_grid_size_returns_whole_grid(self):
+        grid = np.array([[0.5, 0.5]])
+        result = top_scorelines(grid, k=10)
+        assert len(result) == 2

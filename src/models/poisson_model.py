@@ -316,3 +316,19 @@ class DixonColesModel:
                 "H": float(grid[home_wins].sum()),
             })
         return pd.DataFrame(rows, columns=CLASS_ORDER, index=test.index)
+
+
+def top_scorelines(grid: np.ndarray, k: int = 5) -> list[tuple[int, int, float]]:
+    """Returns the `k` most probable (home_goals, away_goals, probability)
+    scorelines from a score grid (predict_score_grid's output) - the
+    "most likely scorelines: 1-1, 2-1, 1-0, ..." match-prediction output
+    the project plan calls for. A plain top-K over the flattened grid;
+    kept as a standalone function (rather than a DixonColesModel method)
+    since it operates on any (max_goals+1, max_goals+1) probability grid,
+    not specifically on this model's internal state."""
+    flat_indices = np.argsort(grid, axis=None)[::-1][:k]
+    home_goals, away_goals = np.unravel_index(flat_indices, grid.shape)
+    return [
+        (int(h), int(a), float(grid[h, a]))
+        for h, a in zip(home_goals, away_goals)
+    ]

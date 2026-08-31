@@ -25,6 +25,8 @@ app/frontend/dist/
 
 # --- Env / secrets ---
 .env
+.env.local
+app/frontend/.env*.local
 
 # --- OS / IDE ---
 .DS_Store
