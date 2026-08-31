@@ -7,6 +7,9 @@ canonicalization, result derivation) without needing network access or a
 Kaggle token in CI.
 """
 
+import json
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -15,6 +18,9 @@ from src.data.validate import (
     canonicalize_teams,
     check_result_consistency,
     derive_result,
+    find_near_duplicate_team_names,
+    load_openfootball_matches,
+    merge_sources,
     parse_dates,
     sanity_check,
 )
@@ -175,3 +181,128 @@ class TestSanityCheck:
         df["match_id"] = [0, 0]
         with pytest.raises(AssertionError, match="unique"):
             sanity_check(df)
+
+
+class TestLoadOpenfootballMatches:
+    """Regression tests for a real data-quality quirk found in the live
+    2025-26 openfootball/football.json file: "score" is shaped
+    inconsistently between matches - usually {"ft": [...], "ht": [...]},
+    but sometimes a bare [home, away] list with no half-time breakdown at
+    all. Both must be handled without crashing or silently misreading a
+    goal count."""
+
+    def _write_json(self, tmp_path: Path, matches: list[dict]) -> Path:
+        f = tmp_path / "matches.json"
+        f.write_text(json.dumps({"name": "Test", "matches": matches}), encoding="utf-8")
+        return f
+
+    def test_dict_shaped_score_with_half_time(self, tmp_path):
+        f = self._write_json(tmp_path, [
+            {"date": "2025-08-15", "team1": "Liverpool FC", "team2": "AFC Bournemouth",
+             "score": {"ft": [4, 2], "ht": [1, 0]}},
+        ])
+        result = load_openfootball_matches([f])
+        assert result.iloc[0][["FTHG", "FTAG", "HTHG", "HTAG"]].tolist() == [4, 2, 1, 0]
+
+    def test_bare_list_shaped_score_with_no_half_time(self, tmp_path):
+        f = self._write_json(tmp_path, [
+            {"date": "2025-08-16", "team1": "Aston Villa FC", "team2": "Newcastle United FC",
+             "score": [0, 0]},
+        ])
+        result = load_openfootball_matches([f])
+        assert result.iloc[0][["FTHG", "FTAG"]].tolist() == [0, 0]
+        assert pd.isna(result.iloc[0]["HTHG"])
+        assert pd.isna(result.iloc[0]["HTAG"])
+
+    def test_unplayed_match_has_no_score_key(self, tmp_path):
+        f = self._write_json(tmp_path, [
+            {"date": "2026-08-28", "team1": "Crystal Palace FC", "team2": "Manchester City FC"},
+        ])
+        completed = load_openfootball_matches([f], completed_only=True)
+        assert len(completed) == 0
+
+        all_matches = load_openfootball_matches([f], completed_only=False)
+        assert len(all_matches) == 1
+        assert pd.isna(all_matches.iloc[0]["FTHG"])
+
+    def test_mixed_shapes_in_one_file_all_parse(self, tmp_path):
+        f = self._write_json(tmp_path, [
+            {"date": "2025-08-15", "team1": "A", "team2": "B", "score": {"ft": [1, 0], "ht": [0, 0]}},
+            {"date": "2025-08-16", "team1": "C", "team2": "D", "score": [2, 2]},
+            {"date": "2025-08-17", "team1": "E", "team2": "F"},
+        ])
+        completed = load_openfootball_matches([f], completed_only=True)
+        assert len(completed) == 2  # the unplayed E vs F match is excluded
+
+
+class TestMergeSources:
+    """Regression tests for a real bug this merge logic had and was fixed
+    for: an earlier version picked "whichever source is later in the
+    list, for every season it covers" - which silently dropped 45 real
+    matches each for two specific seasons where the later-listed source
+    turned out to be incomplete while the earlier one was not. The fix
+    picks per-season, by actual match count, not by source recency."""
+
+    def _season_frame(self, season: str, n_matches: int) -> pd.DataFrame:
+        return pd.DataFrame({
+            "Date": pd.date_range("2020-08-01", periods=n_matches, freq="7D"),
+            "HomeTeam": [f"Team{i}" for i in range(n_matches)],
+            "AwayTeam": [f"Opp{i}" for i in range(n_matches)],
+            "Season": [season] * n_matches,
+        })
+
+    def test_more_complete_earlier_source_wins_over_incomplete_later_source(self):
+        # This is exactly the real-world scenario found in practice: the
+        # later (generally-preferred) source is missing matches for this
+        # specific season; the earlier source has it complete.
+        earlier_source = self._season_frame("2003-04", n_matches=380)
+        later_source = self._season_frame("2003-04", n_matches=335)
+        merged = merge_sources([earlier_source, later_source])
+        assert len(merged) == 380
+
+    def test_later_source_wins_when_more_complete(self):
+        earlier_source = self._season_frame("2021-22", n_matches=309)  # truncated
+        later_source = self._season_frame("2021-22", n_matches=380)    # complete
+        merged = merge_sources([earlier_source, later_source])
+        assert len(merged) == 380
+
+    def test_later_source_breaks_an_exact_tie(self):
+        earlier_source = self._season_frame("2010-11", n_matches=380)
+        later_source = self._season_frame("2010-11", n_matches=380)
+        later_source["HomeTeam"] = "MARKER_" + later_source["HomeTeam"]
+        merged = merge_sources([earlier_source, later_source])
+        assert merged["HomeTeam"].str.startswith("MARKER_").all()
+
+    def test_non_overlapping_seasons_all_kept(self):
+        source_a = self._season_frame("1998-99", n_matches=380)
+        source_b = self._season_frame("2010-11", n_matches=380)
+        merged = merge_sources([source_a, source_b])
+        assert len(merged) == 760
+        assert set(merged["Season"].unique()) == {"1998-99", "2010-11"}
+
+
+class TestFindNearDuplicateTeamNames:
+    """Regression tests for a real bug: adding a new data source
+    introduced "Leicester City FC" and "Southampton FC" as team names
+    distinct from the already-canonical "Leicester City" and
+    "Southampton", silently splitting each club's history in two until
+    this check caught it."""
+
+    def test_flags_fc_suffix_variant(self):
+        found = find_near_duplicate_team_names(["Southampton", "Southampton FC", "Arsenal"])
+        assert ("Southampton FC", "Southampton") in found
+
+    def test_flags_afc_suffix_variant(self):
+        found = find_near_duplicate_team_names(["Bournemouth", "Bournemouth AFC"])
+        assert ("Bournemouth AFC", "Bournemouth") in found
+
+    def test_no_false_positive_when_base_name_absent(self):
+        # "AFC Bournemouth" is this project's actual canonical name (the
+        # "AFC" is a genuine part of the club's name, not a suffix
+        # variant) - there is no bare "Bournemouth" entry to flag against.
+        found = find_near_duplicate_team_names(["AFC Bournemouth", "Arsenal", "Chelsea"])
+        assert found == []
+
+    def test_no_false_positive_for_unrelated_teams(self):
+        found = find_near_duplicate_team_names(["Arsenal", "Chelsea", "Liverpool"])
+        assert found == []

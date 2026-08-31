@@ -16,6 +16,7 @@ data or network access.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -40,19 +41,31 @@ def load_config(config_path: Path = CONFIG_PATH) -> dict:
         return yaml.safe_load(f)
 
 
-def discover_csvs(raw_dir: Path) -> list[Path]:
-    files = sorted(raw_dir.rglob("*.csv"))
+def discover_files(raw_dir: Path, pattern: str = "*.csv") -> list[Path]:
+    files = sorted(raw_dir.rglob(pattern))
     if not files:
         raise FileNotFoundError(
-            f"No CSV files found under {raw_dir}. Run "
+            f"No '{pattern}' files found under {raw_dir}. Run "
             f"`python -m src.data.ingest` first."
         )
     return files
 
 
-def read_raw_csvs(files: list[Path]) -> pd.DataFrame:
-    """Reads and concatenates the raw source files, keeping only rows that
-    have the columns we require and only the columns we recognize."""
+def discover_csvs(raw_dir: Path) -> list[Path]:
+    return discover_files(raw_dir, "*.csv")
+
+
+def read_raw_csvs(files: list[Path], column_rename: dict[str, str] | None = None) -> pd.DataFrame:
+    """Reads and concatenates a source's raw CSVs, keeping only rows that
+    have the columns we require and only the columns we recognize.
+
+    `column_rename` lets a source with entirely different column-naming
+    conventions (e.g. "FullTimeHomeGoals" instead of "FTHG" - see
+    configs/data.yaml) be normalized to this project's canonical schema
+    before the rest of the pipeline ever sees it; sources that already use
+    the canonical names pass an empty dict.
+    """
+    column_rename = column_rename or {}
     frames = []
     for f in files:
         try:
@@ -60,10 +73,12 @@ def read_raw_csvs(files: list[Path]) -> pd.DataFrame:
         except Exception as e:
             print(f"[validate] skipping unreadable file {f.name}: {e}")
             continue
-        # The Kaggle mirror names the match-date column "DateTime" (ISO
-        # 8601 timestamps) rather than football-data.co.uk's original
-        # "Date" (DD/MM/YY). Normalize to "Date" so the rest of the
-        # pipeline doesn't care which source shipped the file.
+        if column_rename:
+            df = df.rename(columns=column_rename)
+        # The original Kaggle mirror names the match-date column
+        # "DateTime" (ISO 8601 timestamps) rather than football-data.co.uk's
+        # original "Date" (DD/MM/YY) - normalize to "Date" so the rest of
+        # the pipeline doesn't care which source shipped the file.
         if "Date" not in df.columns and "DateTime" in df.columns:
             df = df.rename(columns={"DateTime": "Date"})
         missing = [c for c in CORE_COLUMNS if c not in df.columns]
@@ -79,6 +94,51 @@ def read_raw_csvs(files: list[Path]) -> pd.DataFrame:
             f"{CORE_COLUMNS}. Check the downloaded data's format."
         )
     return pd.concat(frames, ignore_index=True)
+
+
+def load_openfootball_matches(files: list[Path], completed_only: bool = True) -> pd.DataFrame:
+    """Parses openfootball/football.json's format (see configs/data.yaml's
+    `openfootball_sources` / `live_source`): each file is
+    {"name": ..., "matches": [{"date": "2025-08-15", "team1": "Liverpool FC",
+    "team2": "AFC Bournemouth", "score": {"ft": [4, 2], "ht": [1, 0]}}, ...]}.
+
+    A match with no "score" key hasn't been played yet. `completed_only`
+    (the default) drops those - used for the historical backfill. Phase 9's
+    live-forecast pipeline instead wants exactly the unplayed matches (the
+    remaining fixture list), so it calls this with completed_only=False and
+    filters for the opposite condition itself.
+
+    The source itself is inconsistent about how a played match's score is
+    shaped: usually {"ft": [home, away], "ht": [home, away]}, but some rows
+    have "score" as a bare [home, away] list with no half-time breakdown at
+    all (confirmed by inspecting the raw 2025-26 file - not a hypothetical
+    edge case). Both are handled here explicitly.
+    """
+    rows = []
+    for f in files:
+        with open(f, encoding="utf-8") as fh:
+            data = json.load(fh)
+        for m in data["matches"]:
+            score = m.get("score")
+            if completed_only and not score:
+                continue
+            if not score:
+                ft, ht = (None, None), None
+            elif isinstance(score, dict):
+                ft, ht = score["ft"], score.get("ht")
+            else:  # bare [home, away] list, no half-time breakdown
+                ft, ht = score, None
+            rows.append({
+                "Date": m["date"],
+                "HomeTeam": m["team1"],
+                "AwayTeam": m["team2"],
+                "FTHG": ft[0],
+                "FTAG": ft[1],
+                "FTR": None,  # always recomputed from goals downstream, see derive_result
+                "HTHG": ht[0] if ht else None,
+                "HTAG": ht[1] if ht else None,
+            })
+    return pd.DataFrame(rows)
 
 
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
@@ -155,6 +215,33 @@ def canonicalize_teams(df: pd.DataFrame, team_map: dict[str, str]) -> pd.DataFra
     return df
 
 
+_SUFFIX_VARIANTS = (" FC", " AFC")
+
+
+def find_near_duplicate_team_names(teams: list[str]) -> list[tuple[str, str]]:
+    """Flags team names that look like an uncanonicalized " FC"/" AFC"
+    suffix variant of another name already in the list - e.g. "Southampton
+    FC" alongside "Southampton". Found necessary in practice, not just in
+    theory: adding a new data source (openfootball's 2024-25 file)
+    introduced exactly this for two clubs (Leicester City FC, Southampton
+    FC) that hadn't appeared in the sources team_name_map.csv was built
+    against, silently splitting each club's match history across two
+    "teams" until this check caught it. Only checks the specific suffix
+    pattern actually seen so far - not a general fuzzy-name-matcher (which
+    would flag unrelated same-prefix clubs, e.g. "Nottingham Forest" vs a
+    hypothetical "Nottingham Town").
+    """
+    team_set = set(teams)
+    found = []
+    for name in teams:
+        for suffix in _SUFFIX_VARIANTS:
+            if name.endswith(suffix):
+                base = name[: -len(suffix)]
+                if base in team_set:
+                    found.append((name, base))
+    return found
+
+
 def derive_result(fthg: pd.Series, ftag: pd.Series) -> pd.Series:
     """Recomputes H/D/A from the goal columns rather than trusting the
     source's FTR column directly - this is a cheap way to catch transcription
@@ -178,11 +265,16 @@ def load_team_name_map(path: Path) -> dict[str, str]:
     return dict(zip(df["alias"], df["canonical"]))
 
 
-def load_and_clean(raw_dir: Path, team_map_path: Path) -> pd.DataFrame:
-    files = discover_csvs(raw_dir)
-    matches = read_raw_csvs(files)
-    matches = parse_dates(matches)
-
+def clean_source(raw: pd.DataFrame, team_map_path: Path, source_name: str) -> pd.DataFrame:
+    """Applies every shared cleaning step to one already schema-normalized
+    source (date parsing, dropping incomplete rows, team-name
+    canonicalization, deriving FTR from goals, assigning a Season label).
+    Does NOT sort, deduplicate across sources, or assign match_id - that
+    happens once, after all sources have been merged (see merge_sources /
+    load_and_clean), since match_id must be globally unique and Date-order
+    dependent across the combined dataset, not per-source.
+    """
+    matches = parse_dates(raw)
     matches = matches.dropna(subset=["FTHG", "FTAG", "HomeTeam", "AwayTeam"])
     matches["FTHG"] = matches["FTHG"].astype(int)
     matches["FTAG"] = matches["FTAG"].astype(int)
@@ -191,17 +283,95 @@ def load_and_clean(raw_dir: Path, team_map_path: Path) -> pd.DataFrame:
     matches = canonicalize_teams(matches, team_map)
 
     derived = derive_result(matches["FTHG"], matches["FTAG"])
-    n_disagree = check_result_consistency(matches["FTR"], derived)
-    if n_disagree:
-        print(f"[validate] {n_disagree} row(s) had FTR inconsistent with "
-              f"goals; using the goal-derived result")
+    if matches["FTR"].notna().any():  # some sources (openfootball) don't provide FTR at all
+        n_disagree = check_result_consistency(matches["FTR"], derived)
+        if n_disagree:
+            print(f"[validate] ({source_name}) {n_disagree} row(s) had FTR "
+                  f"inconsistent with goals; using the goal-derived result")
     matches["FTR"] = derived
 
     matches["Season"] = assign_season(matches["Date"])
     matches = matches.drop_duplicates(subset=["Date", "HomeTeam", "AwayTeam"])
+    matches["_source"] = source_name
+    return matches
+
+
+def cross_validate_overlap(source_frames: dict[str, pd.DataFrame]) -> None:
+    """Diagnostic sanity check, not a filter: for every pair of sources,
+    checks whether matches appearing in BOTH (same Date/HomeTeam/AwayTeam)
+    agree on the actual score. Run before merge_sources() discards a
+    lower-priority source's rows for any season a higher-priority source
+    also covers, so a real disagreement is still visible even though it
+    won't affect the final merged output."""
+    names = list(source_frames.keys())
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            a, b = source_frames[names[i]], source_frames[names[j]]
+            merged = a.merge(b, on=["Date", "HomeTeam", "AwayTeam"], suffixes=("_a", "_b"))
+            if merged.empty:
+                continue
+            disagree = merged[
+                (merged["FTHG_a"] != merged["FTHG_b"]) | (merged["FTAG_a"] != merged["FTAG_b"])
+            ]
+            print(f"[validate] cross-check {names[i]} vs {names[j]}: "
+                  f"{len(merged)} overlapping matches, {len(disagree)} disagree on score")
+            if len(disagree):
+                print(disagree[["Date", "HomeTeam", "AwayTeam", "FTHG_a", "FTAG_a", "FTHG_b", "FTAG_b"]]
+                      .head(10).to_string(index=False))
+
+
+def merge_sources(source_frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Combines multiple cleaned source DataFrames into one, choosing
+    per-season rather than per-source: for any season covered by more than
+    one source, keeps whichever source has the MOST matches for that
+    specific season, not simply whichever source is "newer" or generally
+    more complete overall.
+
+    This isn't a hypothetical caution - it's fixing a real bug found by
+    running this exact merge: the newer, generally-more-complete
+    2000-2025 Kaggle source is missing 45 matches each for specifically
+    2003-04 and 2004-05 (335 of 380), seasons the older 1993-2000 source
+    has completely (380/380) - confirmed by checking both raw files
+    directly. An earlier version of this function picked "the later
+    source in the list, whole season at a time" and silently introduced
+    that 90-match gap. List order is used only to break an exact tie in
+    match count between sources.
+    """
+    all_seasons = sorted({s for frame in source_frames for s in frame["Season"].unique()})
+
+    chosen = []
+    for season in all_seasons:
+        best_rows, best_key = None, None
+        for priority, frame in enumerate(source_frames):
+            season_rows = frame[frame["Season"] == season]
+            if season_rows.empty:
+                continue
+            key = (len(season_rows), priority)  # more matches wins; later source breaks ties
+            if best_key is None or key > best_key:
+                best_key, best_rows = key, season_rows
+        chosen.append(best_rows)
+
+    return pd.concat(chosen, ignore_index=True)
+
+
+def load_and_clean(config: dict, team_map_path: Path) -> pd.DataFrame:
+    source_frames: dict[str, pd.DataFrame] = {}
+
+    for source in config["kaggle_sources"]:
+        files = discover_csvs(PROJECT_ROOT / source["raw_dir"])
+        raw = read_raw_csvs(files, column_rename=source.get("column_rename", {}))
+        source_frames[source["name"]] = clean_source(raw, team_map_path, source["name"])
+
+    for source in config.get("openfootball_sources", []):
+        files = discover_files(PROJECT_ROOT / source["raw_dir"], "*.json")
+        raw = load_openfootball_matches(files, completed_only=True)
+        source_frames[source["name"]] = clean_source(raw, team_map_path, source["name"])
+
+    cross_validate_overlap(source_frames)
+
+    matches = merge_sources(list(source_frames.values()))
     matches = matches.sort_values("Date").reset_index(drop=True)
     matches["match_id"] = matches.index
-
     return matches
 
 
@@ -223,15 +393,21 @@ def sanity_check(matches: pd.DataFrame) -> None:
                   f"but {n_teams} teams implies {expected} - possible "
                   f"missing/duplicate rows or a mid-season data gap")
 
+    all_teams = sorted(set(matches["HomeTeam"]) | set(matches["AwayTeam"]))
+    for name, base in find_near_duplicate_team_names(all_teams):
+        print(f"[validate] WARNING possible uncanonicalized team name: "
+              f"'{name}' looks like a variant of '{base}' - both appear as "
+              f"separate teams. Likely a new data source's naming (e.g. an "
+              f"'FC'/'AFC' suffix) missing from team_name_map.csv, which "
+              f"would silently split that club's history across two names.")
 
-def build(raw_dir: Path | None = None, out_path: Path | None = None,
-          team_map_path: Path | None = None) -> pd.DataFrame:
+
+def build(out_path: Path | None = None, team_map_path: Path | None = None) -> pd.DataFrame:
     config = load_config()
-    raw_dir = raw_dir or (PROJECT_ROOT / config["raw_dir"])
     out_path = out_path or (PROJECT_ROOT / config["processed_path"])
     team_map_path = team_map_path or (PROJECT_ROOT / config["team_name_map_path"])
 
-    matches = load_and_clean(raw_dir, team_map_path)
+    matches = load_and_clean(config, team_map_path)
     sanity_check(matches)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -71,12 +71,20 @@ def _prepare_X(df: pd.DataFrame) -> pd.DataFrame:
 
 
 class XGBoostOutcomeModel:
-    def __init__(self, n_estimators: int = 200, max_depth: int = 3, learning_rate: float = 0.05) -> None:
-        """Defaults chosen to be conservative (shallow trees, moderate
-        learning rate) given this dataset's size (~7,000-10,000 training
-        rows per fold) relative to the feature count (~50) - not yet
-        tuned via a dedicated hyperparameter search, which is future work
-        rather than something hardcoded as "correct" here."""
+    def __init__(self, n_estimators: int = 400, max_depth: int = 3, learning_rate: float = 0.01) -> None:
+        """Tuned via experiments/run_phase10_tuning.py (random search on a
+        held-out validation block, confirmed on a separate 18-season test
+        block never used for tuning): log loss improved from 0.9844 with
+        this project's original hand-picked defaults (n_estimators=200,
+        max_depth=3, learning_rate=0.05) to 0.9814 with these - more trees
+        at a much slower learning rate, i.e. a MORE heavily regularized
+        configuration than the original guess. That direction is
+        consistent with this project's Phase 6 finding that XGBoost was
+        likely overfitting its ~50-feature input on a comparatively small
+        dataset (~7,000-10,000 training rows per fold); tuning still
+        leaves it behind Elo and logistic regression on the same test
+        block (0.9814 vs 0.9771 / 0.9779), so this closes some, not all,
+        of that gap."""
         self.n_estimators = n_estimators
         self.max_depth = max_depth
         self.learning_rate = learning_rate

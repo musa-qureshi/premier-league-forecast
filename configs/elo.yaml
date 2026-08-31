@@ -1,52 +1,46 @@
 # Elo rating system configuration.
 #
-# These defaults are reasonable starting points drawn from established
-# football-Elo implementations (clubelo.com, World Football Elo Ratings,
-# FiveThirtyEight's SPI), not yet tuned against this project's own data.
-# Phase 3 backtests Elo-derived match probabilities against log loss/Brier/
-# RPS and should revisit these values empirically rather than trust them
-# as-is - see README "Phase 3" once written.
+# Tuned via src/evaluation/tuning.py / experiments/run_phase10_tuning.py:
+# a grid search over a dedicated validation block (5 seasons, 2003-04..
+# 2007-08 - see that module's docstring for why a block separate from the
+# reported test seasons is used) picked these values from 81 candidates,
+# minimizing log loss. Confirmed on an 18-season held-out test block the
+# tuning process never saw: log loss improved from 0.9814 (these original,
+# literature-typical defaults) to 0.9771 with the values below.
 
 initial_rating: 1500          # anchor rating for the very first season in the dataset,
                                 # where no incumbent ratings exist yet to compare against
 
-k_factor: 20                   # how much one match result moves a rating.
-                                # Standard chess K=32 is tuned for individual
-                                # skill measured over many games; football
-                                # implementations commonly use a smaller K
-                                # (20-25) since team strength changes more
-                                # slowly than an individual's form.
+k_factor: 20                   # untouched by tuning (20 was already best among {10, 20, 30}
+                                # tried). How much one match result moves a rating - standard
+                                # chess K=32 is tuned for individual skill measured over many
+                                # games; football implementations commonly use a smaller K.
 
-home_advantage: 100             # points added to the home team's rating
-                                # inside the expected-score formula only
-                                # (does not persist on the team's actual
-                                # rating). ~100 Elo points is the commonly
-                                # cited home-advantage magnitude in football
-                                # Elo systems.
+home_advantage: 150             # tuned up from 100 (best among {50, 100, 150} tried, and the
+                                  # top of the range searched - a wider search might find an
+                                  # even higher optimum, untried here). Points added to the
+                                  # home team's rating inside the expected-score formula only
+                                  # (does not persist on the team's actual rating).
 
 use_goal_difference_multiplier: true  # scale K by margin of victory (a 4-0
                                         # win says more about the gap in
                                         # quality than a 1-0 win) using the
                                         # World Football Elo Ratings formula
 
-promoted_team_penalty: 150      # a team with no prior rating in this dataset
-                                  # (promoted from the Championship, or first
-                                  # ever appearance in the data) starts at
-                                  # (mean of all currently-rated teams) minus
-                                  # this penalty, reflecting that newly
-                                  # promoted teams are typically weaker than
-                                  # the incumbent top-flight average. Not yet
-                                  # empirically tuned - see Phase 3.
+promoted_team_penalty: 100      # tuned down from 150 (best among {100, 150, 200} tried) - a
+                                  # LESS severe penalty for a team with no prior rating in this
+                                  # dataset performed better than originally assumed. Starts at
+                                  # (mean of all currently-rated teams) minus this penalty.
 
-season_shrinkage: 0.33          # at each season boundary, every team's
-                                  # rating regresses this fraction of the way
-                                  # toward the current league mean, before
-                                  # that season's matches are processed.
-                                  # Reflects squad turnover (transfers,
-                                  # managerial changes) over the summer break
-                                  # reducing confidence in the rating a team
-                                  # ended the previous season with. Also the
-                                  # mechanism by which a relegated team that
-                                  # returns to the league later carries
-                                  # forward a (partially regressed) rating
-                                  # rather than an arbitrary reset.
+season_shrinkage: 0.0           # tuned down from 0.33 to 0 (best among {0.0, 0.33, 0.5} tried) -
+                                  # no season-boundary regression toward the mean performed
+                                  # BETTER than the shrinkage this project originally assumed
+                                  # would help. Worth being explicit about what this means: the
+                                  # squad-turnover-uncertainty reasoning for shrinkage (see git
+                                  # history / project discussion) wasn't wrong as a hypothesis,
+                                  # but empirically, on this dataset, letting Elo carry a team's
+                                  # full previous-season rating into the new season and simply
+                                  # reacting via k_factor as results come in outperformed
+                                  # deliberately regressing it first. A genuine example of "the
+                                  # data disagreed with the a priori assumption" - reported
+                                  # honestly rather than re-justified after the fact.

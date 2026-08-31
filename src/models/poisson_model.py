@@ -110,10 +110,31 @@ class DixonColesModel:
     def __init__(
         self,
         use_correlation: bool = True,
-        xi: float = 0.3,
-        promoted_penalty: float = 0.4,
+        xi: float = 0.5,
+        promoted_penalty: float = 0.2,
         max_goals: int = MAX_GOALS,
     ) -> None:
+        # xi/promoted_penalty tuned via experiments/run_phase10_tuning.py
+        # (grid search on a held-out validation block, confirmed on a
+        # separate 18-season test block never used for tuning): log loss
+        # improved from 0.9923 with the original literature-typical
+        # defaults (xi=0.3, promoted_penalty=0.4) to 0.9861 with these.
+        #
+        # SCOPE CAVEAT, found in practice, not hypothetically: that tuning
+        # only ever validated WHOLE-SEASON-AHEAD predictions (train on
+        # complete prior seasons, predict a complete season at once) - it
+        # never tested "predict the rest of a season after only 1-2
+        # matchdays have been played", which is exactly what Phase 9's live
+        # forecast does. With this tuned xi=0.5, a newly-promoted team with
+        # one small-sample result (Hull City, 1 match played, a single 2-0
+        # win over Manchester United) came out with an unrealistic 30.7%
+        # simulated title probability - the faster recency decay overweights
+        # that one result enough to make their fitted defense parameter
+        # briefly look stronger than most of the league's. Phase 9's script
+        # explicitly overrides back to xi=0.3/promoted_penalty=0.4 for
+        # exactly this reason - see its own comment for the full story. If
+        # you're predicting early in a season with few matches played, do
+        # the same rather than trusting this class default blindly.
         self.use_correlation = use_correlation
         self.xi = xi
         self.promoted_penalty = promoted_penalty

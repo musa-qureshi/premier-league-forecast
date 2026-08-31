@@ -13,7 +13,7 @@ highly stochastic, and the system is built and evaluated on that premise.
 
 ## Project status
 
-🚧 **Phase 8 (Monte Carlo simulation engine) complete.** See the roadmap below.
+🚧 **Phase 10 (hyperparameter tuning) complete.** See the roadmap below.
 
 - [x] Phase 1 — Data ingestion & cleaning
 - [x] Phase 2 — Feature engineering (Elo, rolling form, league context)
@@ -23,9 +23,10 @@ highly stochastic, and the system is built and evaluated on that premise.
 - [x] Phase 6 — XGBoost (Model 4) + feature-importance explainability
 - [x] Phase 7 — Calibration analysis (reliability diagrams)
 - [x] Phase 8 — Monte Carlo simulation engine
-- [ ] Phase 9 — Current-season forecast (live data refresh)
-- [ ] Phase 10 — API (FastAPI)
-- [ ] Phase 11 — Frontend dashboard (React)
+- [x] Phase 9 — Current-season forecast (live data refresh)
+- [x] Phase 10 — Hyperparameter tuning
+- [ ] Phase 11 — API (FastAPI)
+- [ ] Phase 12 — Frontend dashboard (React)
 
 ## Data
 
@@ -45,30 +46,49 @@ to the site itself being down or blocking automated clients right now, not a
 local network problem — but it means the pipeline can't be built and tested
 against it today.
 
-**Operational source:** a Kaggle dataset,
-[`irkaal/english-premier-league-results`](https://www.kaggle.com/datasets/irkaal/english-premier-league-results),
-which mirrors football-data.co.uk's own E0 season files (same columns, same
-values, verified column-for-column below). If football-data.co.uk becomes
-reachable again, only `src/data/ingest.py` and `configs/data.yaml` need to
-change — everything from `src/data/validate.py` onward consumes whatever CSVs
-land in `data/raw/`, regardless of which source produced them.
+**Operational source: three combined sources**, since no single one covers
+1993-94 through the present:
+
+1. [`irkaal/english-premier-league-results`](https://www.kaggle.com/datasets/irkaal/english-premier-league-results)
+   (Kaggle) — mirrors football-data.co.uk's own E0 files. Used only for its
+   1993-94..1999-00 seasons.
+2. [`marcohuiii/english-premier-league-epl-match-data-2000-2025`](https://www.kaggle.com/datasets/marcohuiii/english-premier-league-epl-match-data-2000-2025)
+   (Kaggle) — a newer, more complete mirror, 2000-01..2024-25 (slightly
+   truncated near the very end).
+3. [`openfootball/football.json`](https://github.com/openfootball/football.json)
+   (GitHub, public domain, **no API key required**) — fills the 2025-26 gap
+   neither Kaggle source covers, and is also the **live source for the
+   current season** (Phase 9), since it publishes the full fixture list with
+   results filled in as matches are played.
+
+If football-data.co.uk becomes reachable again, only `src/data/ingest.py`
+and `configs/data.yaml` need to change — everything from
+`src/data/validate.py` onward consumes whatever files land in each source's
+raw directory, regardless of where they came from.
+
+**Two other Kaggle datasets were checked and rejected as the 2025-26
+source** before openfootball was found: one claimed full-season coverage but
+had real results for only 3 of 38 matchweeks despite listing a full-season
+date range (a fixture-list-only upload, never updated after the season
+started); another was periodic table snapshots, not match-level results.
+Both were verified by actually downloading and inspecting them, not by
+trusting their descriptions.
 
 ### Seasons and coverage
 
-**29 seasons, 1993-94 through 2021-22, 11,113 matches.** Match counts per
-season exactly match known Premier League history: 462 matches/season for
-the 22-team era (1993-94, 1994-95), 380 matches/season for every 20-team
-season since (1995-96 through 2020-21), and 309 matches for 2021-22 — that
-last figure is a real gap, not a bug: the Kaggle mirror's last recorded match
-is dated 2022-04-10, well short of a season that actually runs to late May.
-
-**Known limitation:** this dataset has not been updated since the 2021-22
-season. There is a real gap between where the historical data ends and the
-present. **2022-23 through the current season must be backfilled** — via
-football-data.org's API (see "Live updates" below) or another source —
-before Phase 7 (current-season forecasting) can run against up-to-date team
-strength. This is deliberately treated as a Phase 7 concern, not solved here,
-to avoid pulling live-data-source scope into the historical pipeline.
+**33 seasons, 1993-94 through 2025-26, 12,704 matches — the full available
+history through the most recently completed season, with zero data-completeness
+warnings.** Match counts per season exactly match known Premier League
+history: 462 matches/season for the 22-team era (1993-94, 1994-95), 380
+every season since. `src/data/validate.py::merge_sources` combines the three
+sources **per season**, keeping whichever source has the most complete data
+for that specific season, not simply whichever source is newest overall —
+see "Data quality issues found and fixed" below for why that distinction
+mattered in practice. `src/data/validate.py::cross_validate_overlap` checks
+every pair of sources against each other wherever their seasons overlap: **0
+score disagreements across 8,549 overlapping matches** (8,199 between the two
+Kaggle sources, 350 between the newer Kaggle source and openfootball's
+2024-25 file) — strong independent confirmation of data quality.
 
 ### Variables available
 
@@ -112,19 +132,25 @@ pip install -r requirements.txt
 # docstring for full instructions, including what to do if Kaggle's UI
 # gives you a bare token string instead of a kaggle.json download).
 
-python -m src.data.ingest      # downloads data/raw/kaggle_epl/results.csv
-python -m src.data.validate    # writes data/processed/matches.parquet
+python -m src.data.ingest      # downloads all 3 raw sources (2 Kaggle + openfootball)
+python -m src.data.validate    # cleans, cross-validates, merges -> matches.parquet
 pytest tests/                  # runs the full test suite
 ```
 
-### Live updates (Phase 7, not yet implemented)
+### Live updates (Phase 9)
 
-The current in-progress season will be refreshed via
-[football-data.org](https://www.football-data.org)'s free-tier API, kept
-entirely separate from the historical Kaggle ingestion path (see
-`configs/data.yaml` → `live_source`). Historical training data always comes
-from the same frozen historical source for consistency; only the "what's
-happened so far this season" layer refreshes live.
+The current in-progress season refreshes via the same
+[openfootball/football.json](https://github.com/openfootball/football.json)
+source used to fill the 2025-26 historical gap — no API key needed, unlike
+the football-data.org integration originally planned here. It publishes the
+full season's fixture list with results filled in as matches are played, so
+`experiments/run_phase9_live_forecast.py` reads it directly for both "what's
+happened so far" (current table state, via the same `LeagueTableTracker`
+Phase 2's historical features use) and "what's left to play" (the
+simulator's remaining-fixture input), kept entirely separate from the frozen
+historical ingestion path (see `configs/data.yaml` → `live_source`). Unlike
+every other raw source in this project, the live file is re-fetched on
+every run rather than cached — it changes every time a match is played.
 
 ## Data quality issues found and fixed during Phase 1
 
@@ -159,15 +185,43 @@ data-validity principles in the project plan):
    guessing. See `src/data/validate.py::parse_dates` and the
    `TestParseDates` tests.
 
-Both were caught by the pipeline's own sanity checks (per-season match-count
-validation) and by cross-checking the derived `Season` column against the
-source's own `Season` column (0 mismatches across a spot-check sample) —
-not by assuming the data or the code was correct.
+3. **"Prefer the newer source" was the wrong merge rule.** When the
+   historical dataset was later expanded to 3 sources (Phase 9 prep — see
+   "Seasons and coverage" above), the first version of `merge_sources`
+   picked, for any season two sources both covered, whichever source was
+   listed later (generally newer/more complete). That's wrong: the newer,
+   generally-more-complete 2000-2025 Kaggle source turned out to be missing
+   45 matches each for specifically 2003-04 and 2004-05 (335/380), seasons
+   the older 1993-2000 source has completely (380/380) — caught immediately
+   by the same per-season match-count sanity check from bug #1, applied to
+   the newly-merged data. Fixed by choosing per season based on actual match
+   count, not source recency, with source order only breaking an exact tie.
+   Regression tests lock in both directions (`TestMergeSources`).
+
+4. **Adding a new source silently split a club's history in two.** The same
+   expansion introduced "Leicester City FC" and "Southampton FC" as team
+   names distinct from the already-canonical "Leicester City" and
+   "Southampton" — the new source's naming convention wasn't covered by
+   `team_name_map.csv`, which had only been built against the sources known
+   at the time. First surfaced as an anomaly in an Elo sanity check (two
+   unfamiliar-looking teams in the bottom-5 ratings), not by manual
+   inspection of the 53-line team list, which is exactly why
+   `sanity_check` now runs `find_near_duplicate_team_names` automatically
+   on every build rather than relying on someone reading the printed list
+   closely enough to notice two names that differ only by a trailing "FC".
+
+All four were caught by the pipeline's own automated checks — per-season
+match-count validation, cross-checking the derived `Season` column against
+the source's own `Season` column (0 mismatches), and now automated
+near-duplicate team-name detection — not by assuming the data or the code
+was correct.
 
 ## Feature engineering (Phase 2)
 
 `src/features/build_dataset.py` assembles `data/processed/features.parquet`
-(11,113 rows × 76 columns) from `matches.parquet`, combining three
+(12,704 rows × 77 columns as of the current, post-Phase-9-backfill dataset —
+11,113 × 76 when this phase was first built, before the historical data was
+expanded to 2025-26) from `matches.parquet`, combining three
 independent feature sources - each leakage-tested on its own:
 
 - **Elo ratings** (`src/features/elo.py`) - one overall rating per team,
@@ -208,11 +262,12 @@ snapshotting "does the league have any ratings yet" once per match, before
 either side is looked up - see `src/features/elo.py::EloRatingSystem.
 process_match` and the regression test in `test_elo.py`.
 
-161 tests pass across the full suite (`pytest tests/`), all against
+180 tests pass across the full suite (`pytest tests/`), all against
 synthetic data - no test depends on the downloaded dataset being present.
-(This count was 68 as of Phase 2; Phases 3-8 added the metrics, baseline,
+(This count was 68 as of Phase 2; Phases 3-10 added the metrics, baseline,
 Elo-outcome, backtest, Poisson/Dixon-Coles, logistic-regression, XGBoost,
-calibration, and simulation-engine/summary tests.)
+calibration, simulation-engine/summary, multi-source data-merge, and
+hyperparameter-tuning tests.)
 
 ## Model evaluation (Phase 3)
 
@@ -235,6 +290,18 @@ metric below is a **match-count-weighted average across all 19 seasons**,
 never a single lucky/unlucky split.
 
 ### Model comparison (Phases 3-5)
+
+> **Note:** the numbers below (and the Phase 6-7 XGBoost/calibration results
+> further down) were computed on the 29-season dataset (1993-94..2021-22),
+> before Phase 9 expanded the historical data to 33 seasons through 2025-26.
+> They haven't been recomputed on the larger dataset — re-running the
+> backtests is possible (`python -m experiments.run_phase6_xgboost` etc.
+> against the current `features.parquet`) but wasn't treated as required
+> for Phase 9, since the live forecast fits its own model fresh on the full
+> current historical dataset regardless of what these tables say. The
+> qualitative conclusions (Elo edges out the others; XGBoost underperforms;
+> calibration ranking differs from log-loss ranking) are unlikely to flip
+> from 4 additional seasons, but the exact decimal values here predate them.
 
 | Model | Log Loss | Brier | RPS | Accuracy |
 |---|---|---|---|---|
@@ -512,6 +579,144 @@ the kind of genuine, irreducible football unpredictability this project's
 probabilistic framing is built to represent honestly rather than paper
 over with false certainty.
 
+## Current-season live forecast (Phase 9)
+
+`experiments/run_phase9_live_forecast.py` is the payoff of every earlier
+phase working together: it fits the Poisson/Dixon-Coles model on the full
+historical dataset (Phases 1-2) plus the current season's matches so far,
+builds the current table state with the same tracker historical features
+use, simulates the remaining season 50,000 times (Phase 8), and reports the
+same headline statistics as the Phase 8 validation - except this time for
+a season still being played, not one whose outcome is already known.
+
+**Live result, as of 2026-08-31** (10 of 380 matches played):
+
+| Team | Title % | Champions League % | Relegation % | Expected position |
+|---|---|---|---|---|
+| Manchester City | 65.4% | 99.0% | 0.0% | 1.5 |
+| Arsenal | 21.6% | 92.8% | 0.0% | 2.5 |
+| Liverpool | 10.9% | 84.9% | 0.0% | 3.2 |
+| Chelsea | 1.3% | 42.2% | 0.1% | 5.7 |
+| ... | | | | |
+| Ipswich Town | 0.0% | 0.0% | 89.0% | 18.5 |
+| Coventry City | 0.0% | 0.0% | 100.0% | 20.0 |
+
+Full table: `experiments/live_forecast_2026_27.csv`. Reproduce with
+`python -m experiments.run_phase9_live_forecast` (re-fetches the live file
+and refits the model every run, so the numbers will differ - and should -
+the next time a match is played).
+
+**This is exactly the probabilistic framing the whole project is built
+around** (see project plan discussion, "Don't claim the model is
+correct"): Manchester City having a 65% simulated title probability is not
+a claim that Manchester City will win the league. Ten matches into a
+38-match season, that number mostly reflects Elo/Poisson ratings still
+weighted heavily by *last* season's form - which is honest, not a flaw: a
+well-calibrated forecast this early in a season should be uncertain, and
+will keep updating automatically as more matches are played and re-fed
+into the same pipeline. All three newly-promoted teams this season
+(Coventry City, Hull City, Ipswich Town - confirmed by diffing this
+season's team list against last season's) sit at the bottom with the
+highest relegation probabilities - the same pattern the Phase 8 validation
+found against a season whose real outcome was already known.
+
+## Hyperparameter tuning (Phase 10)
+
+Every model through Phase 9 ran on reasonable literature defaults, not
+tuned values - flagged along the way but never closed until now.
+`src/evaluation/tuning.py` implements nested validation: all 33 seasons
+split chronologically into an initial training block (10 seasons), a
+validation block used ONLY for tuning (5 seasons, 2003-04..2007-08), and a
+final test block (18 seasons, 2008-09..2025-26) the tuning process never
+sees - the same "no lucky/leaked split" guarantee the Phase 3 backtest
+harness provides, applied one level up so hyperparameters aren't fit to the
+same seasons used to report how good they are.
+
+One implementation wrinkle worth understanding: Elo's hyperparameters
+(`k_factor`, `home_advantage`, `season_shrinkage`, `promoted_team_penalty`)
+aren't parameters of a model - they're parameters used to compute the
+`elo_diff` FEATURE itself (Phase 2). Tuning them means regenerating that
+feature per candidate value (`tune_elo_features`), not just refitting a
+model against one fixed feature matrix, the way Poisson/logistic
+regression/XGBoost's tuning (`tune_model`) does.
+
+### Result: every model improved, and the ranking held
+
+| Model | Default log loss | Tuned log loss | Δ |
+|---|---|---|---|
+| **Elo** | 0.9814 | **0.9771** | −0.0043 |
+| Logistic Regression | 0.9782 | 0.9779 | −0.0003 |
+| XGBoost | 0.9844 | 0.9814 | −0.0030 |
+| Poisson (Dixon-Coles) | 0.9923 | 0.9861 | −0.0062 |
+
+(All four measured on the same 18-season final test block, so this is a
+fair like-for-like comparison - unlike the earlier "Model comparison"
+table above, which used a different season split entirely and predates
+Phase 9's historical data backfill.) **Elo still wins after every other
+model gets tuned its own fair shot** (0.9771 vs. logistic regression's
+0.9779) - a more robust version of the original "simple approach wins"
+finding than the untuned comparison alone could support, since it rules
+out "Elo only won because nobody bothered tuning the others" as an
+explanation.
+
+Selected tuned values: Elo's `home_advantage` moved up from 100 to 150 and
+`season_shrinkage` moved down from 0.33 to **0** - the data disagreed with
+this project's original hypothesis that regressing ratings toward the mean
+between seasons would help, which is reported honestly rather than
+re-justified after the fact (see `configs/elo.yaml` for the full
+per-parameter reasoning). XGBoost's tuned configuration (400 trees,
+learning rate 0.01, same depth-3 as before) is a much more heavily
+regularized version of the original guess - consistent with Phase 6's
+finding that XGBoost was likely overfitting.
+
+### A real train/deploy mismatch, found and fixed
+
+Applying Poisson's tuned hyperparameters (`xi=0.5`, faster recency decay)
+to Phase 9's live forecast produced a visibly wrong result: **Hull City -
+newly promoted, one match played, a single 2-0 win over Manchester United
+- came out as the #2 title favorite at 30.7%, ahead of Arsenal.** The root
+cause: Phase 10's tuning only ever validated *whole-season-ahead*
+predictions (train on complete prior seasons, predict a complete season at
+once); it never tested "predict the rest of a season after only 1-2
+matchdays," which is exactly Phase 9's actual scenario. The faster recency
+decay that helps when predicting a full season out overweights one
+small-sample early-season result badly enough to make Hull City's fitted
+defense parameter briefly look stronger than most of the league's -
+confirmed directly by comparing their fitted attack/defense parameters
+under both configurations (`experiments/run_phase9_live_forecast.py`'s
+inline comment has the full diagnostic).
+
+**Fixed by having Phase 9 explicitly use the original, more conservative
+values (`xi=0.3`, `promoted_penalty=0.4`)** rather than inheriting the
+class default - the same values Phase 8's validation (also a mid-season
+cutoff) used and already confirmed sensible against a season with a known
+real outcome. `src/models/poisson_model.py`'s docstring carries the same
+warning for anyone else predicting early in a season with few matches
+played. **Genuine, not-yet-done future work this discovery motivates**: a
+dedicated mid-season-cutoff tuning pass - sweeping `xi` validated
+specifically against partial-season predictions across many seasons and
+cutoff points, the way Phase 8 checks the simulator's output but Phase 10
+never checked the hyperparameters against that same scenario.
+
+Reproduce with `python -m experiments.run_phase10_tuning` (takes a few
+minutes - Elo/Poisson/logistic regression tune in seconds each, XGBoost's
+25-candidate random search is the slow part at roughly 2 minutes, still
+comfortably a laptop-scale job; see below for why Colab/GPU access isn't
+needed for tuning on a dataset this size).
+
+**Why not Google Colab for this?** Colab's real value is free GPU/TPU
+access, which matters for GPU-bound workloads - deep learning, mainly. This
+project deliberately has none of that (see Step 1 of the original project
+plan discussion on why deep learning isn't justified here). Concretely:
+Elo and logistic-regression grids finish in seconds, Poisson's 36-candidate
+grid in well under a minute, and even XGBoost's 25-candidate random search
+- the only genuinely multi-dimensional search here - completes in about 2
+minutes on CPU, on a dataset this size (~12,700 rows, ~50 features). Colab
+would add upload/session-timeout/sync overhead for no compute benefit; it
+would only be worth adding for a different reason entirely (e.g. a
+shareable "Open in Colab" portfolio artifact), which wasn't judged
+necessary here.
+
 ## Repository structure
 
 ```
@@ -521,17 +726,17 @@ data/
   external/            # team_name_map.csv and similar small config-like data
 notebooks/             # exploration only - no load-bearing logic lives here
 src/
-  data/                # ingestion, cleaning, validation
+  data/                # ingestion (3 combined sources), cleaning, validation, live-data loading
   features/            # Elo, rolling stats, league table state, dataset assembly
   models/               # baseline, Elo, Poisson/Dixon-Coles, logistic, XGBoost (all done, Phases 3-6)
-  evaluation/           # metrics (log loss/Brier/RPS), expanding-window backtest, calibration
+  evaluation/           # metrics (log loss/Brier/RPS), expanding-window backtest, calibration, tuning
   simulation/            # Monte Carlo season simulator (engine + summary stats)
   visualization/          # chart helpers
-experiments/            # experiment-runner scripts + versioned backtest results (results.csv)
+experiments/            # experiment-runner scripts + versioned backtest/forecast results
 tests/                  # pytest suite
 app/
-  backend/               # (Phase 9) FastAPI - no modeling logic, calls src/
-  frontend/               # (Phase 10) React + TypeScript dashboard
+  backend/               # (Phase 11) FastAPI - no modeling logic, calls src/
+  frontend/               # (Phase 12) React + TypeScript dashboard
 configs/                 # data.yaml and future model/simulation configs
 ```
 
@@ -539,11 +744,13 @@ configs/                 # data.yaml and future model/simulation configs
 
 ```bash
 pip install -r requirements.txt
-python -m src.data.ingest                    # data/raw/kaggle_epl/results.csv
-python -m src.data.validate                  # data/processed/matches.parquet
+python -m src.data.ingest                    # downloads all 3 historical sources
+python -m src.data.validate                  # data/processed/matches.parquet (1993-94..2025-26)
 python -m src.features.build_dataset         # data/processed/features.parquet
 python -m experiments.run_phase6_xgboost     # experiments/results.csv
 python -m experiments.run_phase7_calibration # experiments/calibration_ece.csv, calibration_home_win.png
 python -m experiments.run_phase8_simulation_validation  # simulator validated against a real known season
+python -m experiments.run_phase9_live_forecast           # live 2026-27 forecast
+python -m experiments.run_phase10_tuning                 # hyperparameter tuning (a few minutes)
 pytest tests/
 ```

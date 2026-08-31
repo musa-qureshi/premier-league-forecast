@@ -1,22 +1,96 @@
 # Data acquisition configuration.
 #
 # Primary historical source: football-data.co.uk (England, division E0 =
-# Premier League). That source is currently unreachable from this project's
-# development environment (TLS-layer connection failures across every client
-# tried - see README.md "Data" section), so we operationally source from a
-# Kaggle mirror of the same data instead. If football-data.co.uk becomes
-# reachable again, `kaggle_dataset` can be swapped for a direct-download
-# source without changing anything downstream of src/data/validate.py.
+# Premier League). That source is unreachable from this project's
+# development environment (TLS-layer connection failures across every
+# client tried, confirmed on multiple separate occasions - see README.md
+# "Data" section), so we operationally source from Kaggle mirrors instead.
+# If football-data.co.uk becomes reachable later, these entries can be
+# swapped for a direct-download source without changing anything
+# downstream of src/data/validate.py.
+#
+# Three sources are combined to cover the full history through the present
+# season, since no single one does:
+#   - historical_1993_2000: the original Kaggle mirror, used ONLY for its
+#     1993-94..1999-00 seasons (the only period the other sources don't
+#     cover at all).
+#   - historical_2000_2025: a newer, more complete Kaggle mirror covering
+#     2000-01..2024-25 (slightly truncated near the very end) - preferred
+#     over the first source for any season both cover, since it's both
+#     more complete (the first source truncates mid-2021-22) and more
+#     current.
+#   - openfootball_2025_26: fills the gap neither Kaggle source covers -
+#     the completed 2025-26 season - from openfootball/football.json, a
+#     free, public-domain, actively-maintained GitHub repo requiring no
+#     API key. Two Kaggle datasets that claimed 2025-26 coverage were
+#     checked and rejected: one had only 3 of 38 matchweeks of real
+#     results despite a full fixture-list date range, the other was
+#     periodic table snapshots, not match-level results - see git history
+#     / project discussion for the verification that ruled them out.
+# See src/data/validate.py for the merge logic (later sources in each list
+# take priority for any season both cover) and the cross-validation check
+# run between overlapping sources as a data-quality sanity check.
+kaggle_sources:
+  - name: historical_1993_2000
+    slug: "irkaal/english-premier-league-results"
+    raw_dir: "data/raw/kaggle_epl"
+    # Column names already match this project's canonical schema (Date,
+    # HomeTeam, AwayTeam, FTHG, FTAG, FTR, ...) - no rename needed, only
+    # the DateTime -> Date rename src/data/validate.py already handles.
+    column_rename: {}
+  - name: historical_2000_2025
+    slug: "marcohuiii/english-premier-league-epl-match-data-2000-2025"
+    raw_dir: "data/raw/kaggle_epl_2000_2025"
+    # This source uses entirely different column names for the same data.
+    column_rename:
+      MatchDate: Date
+      FullTimeHomeGoals: FTHG
+      FullTimeAwayGoals: FTAG
+      FullTimeResult: FTR
+      HalfTimeHomeGoals: HTHG
+      HalfTimeAwayGoals: HTAG
+      HalfTimeResult: HTR
+      HomeShots: HS
+      AwayShots: AS
+      HomeShotsOnTarget: HST
+      AwayShotsOnTarget: AST
+      HomeCorners: HC
+      AwayCorners: AC
+      HomeFouls: HF
+      AwayFouls: AF
+      HomeYellowCards: HY
+      AwayYellowCards: AY
+      HomeRedCards: HR
+      AwayRedCards: AR
 
-kaggle_dataset: "irkaal/english-premier-league-results"
+# openfootball/football.json sources: one JSON file per season, at
+# https://raw.githubusercontent.com/openfootball/football.json/master/{season}/en.1.json
+# Covers Premier League seasons 2010-11 onward (confirmed by probing;
+# earlier seasons 404). Only 2025-26 is listed here for the historical
+# backfill - 2010-11..2024-25 are already covered by the Kaggle sources
+# above, and re-fetching them here would just be redundant (though this
+# repo could serve as an independent cross-check for that whole range in
+# the future, if ever needed).
+openfootball_sources:
+  - name: openfootball_2024_25
+    season: "2024-25"
+    url: "https://raw.githubusercontent.com/openfootball/football.json/master/2024-25/en.1.json"
+    raw_dir: "data/raw/openfootball_2024_25"
+    # Closes a real gap: the marcohuiii Kaggle source's 2024-25 season is
+    # truncated at 350/380 matches (missing the season's final ~3 weeks).
+  - name: openfootball_2025_26
+    season: "2025-26"
+    url: "https://raw.githubusercontent.com/openfootball/football.json/master/2025-26/en.1.json"
+    raw_dir: "data/raw/openfootball_2025_26"
 
-raw_dir: "data/raw/kaggle_epl"
 processed_path: "data/processed/matches.parquet"
 team_name_map_path: "data/external/team_name_map.csv"
 
-# Current-season live refresh (Phase 7) - separate source, separate script.
+# Current-season live refresh (Phase 9): same openfootball/football.json
+# source, current season - no API key needed, and it exposes the full
+# remaining fixture list (matches with no "score" key yet) directly,
+# which is exactly what the Monte Carlo simulator needs as input.
 live_source:
-  provider: "football-data.org"
-  competition_code: "PL"
-  # API key is read from the FOOTBALL_DATA_ORG_KEY environment variable,
-  # never committed to this file.
+  provider: "openfootball"
+  url_template: "https://raw.githubusercontent.com/openfootball/football.json/master/{season}/en.1.json"
+  current_season: "2026-27"
