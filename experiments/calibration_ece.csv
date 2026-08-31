@@ -1,0 +1,5 @@
+model,ece_home_win
+Poisson (Dixon-Coles),0.015580652227648067
+XGBoost,0.018456947113675057
+Logistic Regression,0.020292105769027603
+Elo,0.02428251128365886

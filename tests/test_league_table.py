@@ -84,6 +84,23 @@ class TestLeagueTableTracker:
         assert snap_new_season["home_table_points"] == 0
         assert snap_new_season["home_table_played"] == 0
 
+    def test_current_standings_reflects_applied_results(self):
+        tracker = LeagueTableTracker()
+        tracker.snapshot("Arsenal", "Chelsea", season="2023-24")
+        tracker.apply_result("Arsenal", "Chelsea", 3, 1)
+
+        standings = tracker.current_standings()
+        assert standings["Arsenal"]["points"] == 3
+        assert standings["Arsenal"]["played"] == 1
+        assert standings["Arsenal"]["goal_difference"] == 2
+        assert standings["Chelsea"]["points"] == 0
+        assert standings["Chelsea"]["goal_difference"] == -2
+
+    def test_current_standings_only_includes_registered_teams(self):
+        tracker = LeagueTableTracker()
+        tracker.snapshot("Arsenal", "Chelsea", season="2023-24")
+        assert set(tracker.current_standings().keys()) == {"Arsenal", "Chelsea"}
+
 
 class TestComputeLeagueTableFeatures:
     def test_out_of_order_input_raises(self):
