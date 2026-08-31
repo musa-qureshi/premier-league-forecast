@@ -69,12 +69,17 @@ def _prepare_X(df: pd.DataFrame) -> pd.DataFrame:
 
 
 class LogisticOutcomeModel:
-    def __init__(self, C: float = 1.0) -> None:
+    def __init__(self, C: float = 0.01) -> None:
         """`C` is sklearn's inverse-regularization-strength - lower C means
-        stronger L2 regularization. Left at sklearn's sensible default
-        rather than tuned here; regularization-strength tuning belongs in
-        a dedicated hyperparameter search, not hardcoded into the model
-        class."""
+        stronger L2 regularization. Tuned via
+        experiments/run_phase10_tuning.py (grid search on a held-out
+        validation block, confirmed on a separate 18-season test block
+        never used for tuning): much stronger regularization than
+        sklearn's default (C=1.0) performed marginally better here
+        (log loss 0.9782 -> 0.9779) - consistent with this project's
+        earlier finding that most non-elo_diff features in this model's
+        11-feature set contribute little signal on their own; heavier
+        regularization suppresses that noise a bit further."""
         self.C = C
         self._pipeline: Pipeline | None = None
 

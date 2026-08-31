@@ -15,7 +15,7 @@ seaborn>=0.13
 
 # --- data acquisition ---
 kaggle>=1.6              # historical data (Phase 1)
-requests>=2.31            # current-season refresh via football-data.org (Phase 7)
+requests>=2.31            # openfootball JSON downloads + current-season live refresh (Phase 9)
 pyyaml>=6.0
 
 # --- explainability (Phase 5, optional) ---

@@ -7,20 +7,34 @@ football-data.co.uk, which publishes one CSV per season per English
 football division (Premier League = "E0") going back to 1993-94, including
 match odds and (from 2000-01 onward) shots/corners/cards.
 
-That source turned out to be unreachable from this project's development
-environment: connection attempts fail at the TLS handshake stage across four
+That source is unreachable from this project's development environment:
+connection attempts fail at the TLS handshake stage across four
 independent client stacks (Windows schannel/curl, .NET/PowerShell, Python +
 OpenSSL with relaxed cipher settings, and a server-side fetch service),
-while other HTTPS hosts (google.com, kaggle.com) work fine. That pattern
-points to the site itself being unreachable or blocking automated clients
-right now, not a local network/proxy problem.
+confirmed on more than one occasion, while other HTTPS hosts (google.com,
+kaggle.com, football-data.org) work fine. That pattern points to the site
+itself being unreachable or blocking automated clients, not a local
+network/proxy problem.
 
 Rather than build the pipeline against an untestable source, this project
-downloads from a Kaggle dataset that mirrors football-data.co.uk's own E0
-season files (same columns, same values): "irkaal/english-premier-league-
-results". If football-data.co.uk becomes reachable later, only this file
-needs to change - everything from validate.py onward consumes whatever CSVs
-land in `raw_dir`, regardless of where they came from.
+downloads from three sources that together cover the full history through
+the present season (see configs/data.yaml for the full reasoning behind
+each and src/data/validate.py for how they're normalized and merged):
+
+  - "irkaal/english-premier-league-results" (Kaggle): 1993-94 through a
+    truncated 2021-22. Only its pre-2000 seasons are actually used.
+  - "marcohuiii/english-premier-league-epl-match-data-2000-2025" (Kaggle):
+    2000-01 through a slightly truncated 2024-25. Preferred over the first
+    source for every season it covers.
+  - openfootball/football.json (GitHub, no API key needed): fills the
+    2025-26 gap neither Kaggle source covers, and is also the live source
+    for the current season (Phase 9) - it exposes the full remaining
+    fixture list directly, not just completed results.
+
+If football-data.co.uk becomes reachable later, only this file and
+configs/data.yaml need to change - everything from src/data/validate.py
+onward consumes whatever files land in each source's raw_dir, regardless
+of where they came from.
 
 Licensing: football-data.co.uk's terms permit personal, non-commercial,
 educational use with attribution to the site. This project is educational /
@@ -31,6 +45,9 @@ Setup required to run this script
 1. Create a Kaggle account (free) if you don't have one.
 2. Go to kaggle.com -> your profile -> Settings -> API -> "Create New Token".
    This downloads a `kaggle.json` file containing {"username": ..., "key": ...}.
+   (If Kaggle's UI instead shows you a bare token string starting "KGAT_"
+   rather than downloading a file, build kaggle.json yourself: {"username":
+   "<your kaggle username>", "key": "<that token>"}.)
 3. Place it at:
      Windows:      C:\\Users\\<you>\\.kaggle\\kaggle.json
      Linux/macOS:  ~/.kaggle/kaggle.json
@@ -44,6 +61,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import requests
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -92,10 +110,37 @@ def download(dataset_slug: str, dest: Path, force: bool = False) -> Path:
     return dest
 
 
+def download_json(url: str, dest: Path, filename: str, force: bool = False) -> Path:
+    """Downloads a single JSON file via plain HTTP GET - used for the
+    openfootball/football.json source, which needs no API key/auth at
+    all, unlike the Kaggle sources above."""
+    dest.mkdir(parents=True, exist_ok=True)
+    out_file = dest / filename
+
+    if out_file.exists() and not force:
+        print(f"[ingest] {out_file} already exists, skipping download "
+              f"(pass --force to re-download).")
+        return out_file
+
+    print(f"[ingest] downloading '{url}' -> {out_file}")
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    out_file.write_bytes(response.content)
+    print(f"[ingest] done - {len(response.content):,} bytes")
+    return out_file
+
+
 def main() -> None:
     config = load_config()
-    dest = PROJECT_ROOT / config["raw_dir"]
-    download(config["kaggle_dataset"], dest, force="--force" in sys.argv)
+    force = "--force" in sys.argv
+
+    for source in config["kaggle_sources"]:
+        dest = PROJECT_ROOT / source["raw_dir"]
+        download(source["slug"], dest, force=force)
+
+    for source in config.get("openfootball_sources", []):
+        dest = PROJECT_ROOT / source["raw_dir"]
+        download_json(source["url"], dest, filename="matches.json", force=force)
 
 
 if __name__ == "__main__":
