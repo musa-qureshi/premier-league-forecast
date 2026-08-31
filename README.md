@@ -13,7 +13,7 @@ highly stochastic, and the system is built and evaluated on that premise.
 
 ## Project status
 
-🚧 **Phase 10 (hyperparameter tuning) complete.** See the roadmap below.
+🚧 **Phase 12 (React frontend) complete - all 12 planned phases done.** See the roadmap below.
 
 - [x] Phase 1 — Data ingestion & cleaning
 - [x] Phase 2 — Feature engineering (Elo, rolling form, league context)
@@ -25,8 +25,8 @@ highly stochastic, and the system is built and evaluated on that premise.
 - [x] Phase 8 — Monte Carlo simulation engine
 - [x] Phase 9 — Current-season forecast (live data refresh)
 - [x] Phase 10 — Hyperparameter tuning
-- [ ] Phase 11 — API (FastAPI)
-- [ ] Phase 12 — Frontend dashboard (React)
+- [x] Phase 11 — API (FastAPI)
+- [x] Phase 12 — Frontend dashboard (React)
 
 ## Data
 
@@ -262,12 +262,12 @@ snapshotting "does the league have any ratings yet" once per match, before
 either side is looked up - see `src/features/elo.py::EloRatingSystem.
 process_match` and the regression test in `test_elo.py`.
 
-180 tests pass across the full suite (`pytest tests/`), all against
+199 tests pass across the full suite (`pytest tests/`), all against
 synthetic data - no test depends on the downloaded dataset being present.
-(This count was 68 as of Phase 2; Phases 3-10 added the metrics, baseline,
+(This count was 68 as of Phase 2; Phases 3-11 added the metrics, baseline,
 Elo-outcome, backtest, Poisson/Dixon-Coles, logistic-regression, XGBoost,
-calibration, simulation-engine/summary, multi-source data-merge, and
-hyperparameter-tuning tests.)
+calibration, simulation-engine/summary, multi-source data-merge,
+hyperparameter-tuning, and API tests.)
 
 ## Model evaluation (Phase 3)
 
@@ -717,6 +717,103 @@ would only be worth adding for a different reason entirely (e.g. a
 shareable "Open in Colab" portfolio artifact), which wasn't judged
 necessary here.
 
+## API (Phase 11)
+
+`app/backend/` is a thin FastAPI layer with **no modeling or simulation
+logic of its own** - every endpoint calls into `src/live_forecast.py`'s
+`build_current_forecast()` (the same pipeline `experiments/
+run_phase9_live_forecast.py` calls) or the fitted model it returns, and
+formats the result as JSON. Refactoring that pipeline out of the Phase 9
+script and into `src/` specifically to avoid duplicating it here was worth
+doing precisely to keep this rule real, not just stated.
+
+Building a forecast costs a few real seconds (live fetch + refit + 50,000
+simulations), so `app/backend/cache.py` holds one in-memory copy behind a
+lock rather than rebuilding on every request - a deliberately simple,
+single-process cache appropriate for a portfolio deployment (a production
+service with real traffic would want a shared cache and a scheduled
+refresh job instead). `POST /simulation/refresh` is the only endpoint that
+does real work; everything else reads whatever it (or the automatic
+first-request build) last produced.
+
+### Endpoints
+
+| Endpoint | Returns |
+|---|---|
+| `GET /health` | Liveness check |
+| `GET /meta` | Season, simulation count, matches played/remaining, generation time |
+| `GET /standings` | Current table (points/GD/played per team) |
+| `GET /forecast` | Title/Champions-League/relegation probability + expected position/points, every team |
+| `GET /teams/{team}` | The `/forecast` row for one team |
+| `GET /teams/{team}/position-distribution` | P(finish in position N) for every N, one team |
+| `GET /matches/upcoming` | Remaining fixtures with expected goals |
+| `GET /matches/predict?home=X&away=Y` | Expected goals, W/D/L probabilities, top-5 most likely scorelines for any two teams |
+| `POST /simulation/refresh` | Forces a live re-fetch + refit + re-simulation |
+
+Unknown team names return a 404 (validated against the current season's
+actual teams from live data, not hardcoded); `/matches/predict` with two
+identical teams returns 400; missing required query parameters return 422
+(FastAPI's automatic request validation).
+
+**Verified against the real live pipeline**, not just its own test suite -
+`GET /matches/predict?home=Arsenal&away=Liverpool` genuinely returned
+`{"expected_home_goals": 1.674, "expected_away_goals": 1.220,
+"home_win_probability": 0.475, "draw_probability": 0.251,
+"away_win_probability": 0.274, "most_likely_scorelines": [{"1-1":
+11.8%}, {"2-1": 9.5%}, ...]}` - matching, almost exactly, the match-
+prediction output format the original project plan specified. A cached
+`/standings` call after the first request completed in 49ms, versus
+several seconds for the initial live build, confirming the cache is doing
+its job.
+
+Run locally:
+
+```bash
+uvicorn app.backend.main:app --reload
+# then: http://127.0.0.1:8000/docs for interactive OpenAPI docs
+```
+
+`tests/test_api.py` covers the HTTP layer (routing, request validation,
+response shapes, 404/400/422 handling) against a real fitted model on
+synthetic data (`FastAPI`'s `TestClient`, `get_forecast` monkeypatched to
+avoid a network call in the test suite) - consistent with this project's
+rule that no test depends on the downloaded dataset or network access.
+
+## Frontend dashboard (Phase 12)
+
+`app/frontend/` is a React + TypeScript dashboard (Vite, React Router,
+Recharts) over the API - a standings/forecast home page and a per-team
+detail page with a finishing-position distribution chart, a points-range
+visual, and upcoming fixtures. No modeling logic here either: every number
+comes from `app/backend/`'s endpoints. Full details, design notes, and how
+to run it: `app/frontend/README.md`.
+
+**Chart design followed the project's dataviz skill** rather than default
+library styling: a validated (colorblind-safety-checked via that skill's
+`validate_palette.js`, not eyeballed) categorical/status/sequential
+palette as CSS custom properties with real light/dark values, ≤24px bars
+with rounded data-ends, hairline recessive gridlines, and - deliberately -
+a labeled range rather than a histogram for points distribution, since the
+API only exposes summary statistics (mean/median/p05/p95), not the raw
+simulation draws a histogram would need to be honest.
+
+**Verified against the real, running system**, not just build success -
+started both the FastAPI backend and the Vite dev server, drove a headless
+browser through the actual app (standings page → click into Manchester
+City → team detail page), and confirmed: real live data rendering
+correctly (the same 65.4%/99.0%/1.5 numbers `/teams/Manchester%20City`
+returns directly), a working chart tooltip, zero browser console errors,
+and correct rendering in both light and dark color schemes. That pass is
+also what caught a real UX problem before calling this done: the upcoming-
+fixtures list initially rendered all 37 of a team's remaining fixtures in
+one unbroken list; fixed to show the next 5 with a count of how many
+remain. Slicing "the next 5" only means something if the list is actually
+chronological, which `src/live_forecast.py` had been relying on the source
+file's existing row order for rather than guaranteeing outright - harmless
+today, since that order happens to already be date-sorted, but not
+something a reader should have to trust silently; fixed with an explicit
+sort so it's guaranteed rather than assumed.
+
 ## Repository structure
 
 ```
@@ -732,11 +829,12 @@ src/
   evaluation/           # metrics (log loss/Brier/RPS), expanding-window backtest, calibration, tuning
   simulation/            # Monte Carlo season simulator (engine + summary stats)
   visualization/          # chart helpers
+  live_forecast.py        # live-data -> model -> simulation pipeline (shared by the CLI script and API)
 experiments/            # experiment-runner scripts + versioned backtest/forecast results
 tests/                  # pytest suite
 app/
-  backend/               # (Phase 11) FastAPI - no modeling logic, calls src/
-  frontend/               # (Phase 12) React + TypeScript dashboard
+  backend/               # FastAPI - no modeling logic, calls src/live_forecast.py (done, Phase 11)
+  frontend/               # React + TypeScript dashboard (done, Phase 12 - see its own README)
 configs/                 # data.yaml and future model/simulation configs
 ```
 
