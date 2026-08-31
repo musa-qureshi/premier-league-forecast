@@ -121,6 +121,25 @@ class LeagueTableTracker:
             home.points += 1
             away.points += 1
 
+    def current_standings(self) -> dict[str, dict]:
+        """A public snapshot of every registered team's current state
+        (points/played/goals_for/goals_against/goal_difference) - the
+        same role EloRatingSystem.current_ratings() plays for Elo. Used to
+        seed the Monte Carlo simulator's starting table state (Phase 8)
+        and, eventually, the live current-season forecast (Phase 9) -
+        callers should use this rather than reaching into the tracker's
+        internal _table representation directly."""
+        return {
+            team: {
+                "points": state.points,
+                "played": state.played,
+                "goals_for": state.goals_for,
+                "goals_against": state.goals_against,
+                "goal_difference": state.goal_difference,
+            }
+            for team, state in self._table.items()
+        }
+
 
 def compute_league_table_features(matches: pd.DataFrame) -> pd.DataFrame:
     """Adds home_table_*/away_table_* columns to `matches`. `matches` must
