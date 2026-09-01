@@ -110,3 +110,19 @@ class TestSimulateHistoricalCutoff:
         matches = _synthetic_multi_season_matches()
         with pytest.raises(ValueError, match="not found"):
             simulate_historical_cutoff(matches, season="2099-00", cutoff_date=pd.Timestamp("2099-01-01"))
+
+    def test_generated_at_is_timezone_aware(self):
+        # Regression test for a real production bug: a naive
+        # pd.Timestamp.now() serializes with no timezone marker at all,
+        # and a browser's `new Date(...)` interprets a marker-less ISO
+        # string as ITS OWN local time rather than UTC - silently skewing
+        # the frontend's "updated N ago" display by exactly the visitor's
+        # UTC offset (a real deploy showed a permanently-stuck "updated 3
+        # hours ago" for a visitor 3 hours off UTC, even seconds after a
+        # fresh forecast). See src/live_forecast.py's construction sites
+        # for the full story.
+        matches = _synthetic_multi_season_matches()
+        forecast = simulate_historical_cutoff(
+            matches, season="2001-02", cutoff_date=pd.Timestamp("2001-09-15"), n_simulations=50
+        )
+        assert forecast.generated_at.tzinfo is not None
