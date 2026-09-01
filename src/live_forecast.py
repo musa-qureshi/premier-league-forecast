@@ -51,7 +51,7 @@ LIVE_FORECAST_POISSON_CONFIG = {"use_correlation": True, "xi": 0.3, "promoted_pe
 @dataclass
 class LiveForecast:
     season: str
-    generated_at: pd.Timestamp
+    generated_at: pd.Timestamp  # UTC-aware - see the two construction sites below for why
     n_simulations: int
     n_played: int
     n_remaining: int
@@ -159,7 +159,16 @@ def build_current_forecast(
 
     return LiveForecast(
         season=current_season,
-        generated_at=pd.Timestamp.now(),
+        # tz="UTC", not a naive pd.Timestamp.now(): a naive timestamp
+        # serializes with no timezone marker at all (app/backend/main.py's
+        # .isoformat()), and a browser's `new Date(...)` interprets a
+        # marker-less ISO string as ITS OWN local time, not UTC - silently
+        # skewing the frontend's "updated N ago" display by exactly the
+        # visitor's UTC offset (confirmed in production: a real deploy
+        # displayed a permanently-stuck "updated 3 hours ago" for a
+        # visitor 3 hours off UTC, even seconds after a fresh forecast).
+        # Matches cache.py's already-correct datetime.now(timezone.utc).
+        generated_at=pd.Timestamp.now(tz="UTC"),
         n_simulations=n_simulations,
         n_played=len(played),
         n_remaining=len(remaining),
@@ -213,7 +222,7 @@ def simulate_historical_cutoff(
 
     return LiveForecast(
         season=season,
-        generated_at=pd.Timestamp.now(),
+        generated_at=pd.Timestamp.now(tz="UTC"),  # see build_current_forecast()'s comment on why tz-aware
         n_simulations=n_simulations,
         n_played=len(played),
         n_remaining=len(remaining),
