@@ -63,6 +63,60 @@ class LiveForecast:
     model: DixonColesModel
 
 
+def _forecast_from_matches(
+    train_matches: pd.DataFrame,
+    played_this_season: pd.DataFrame,
+    remaining_this_season: pd.DataFrame,
+    season: str,
+    n_simulations: int,
+    seed: int | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, DixonColesModel]:
+    """The shared core behind both build_current_forecast() (live) and
+    simulate_historical_cutoff() (backtesting - see
+    src/simulation/calibration_backtest.py): fit the model, build the
+    current table, predict remaining fixtures, simulate, summarize.
+    Neither caller duplicates this logic - the only difference between
+    them is WHERE `train_matches`/`played_this_season`/
+    `remaining_this_season` come from (a live JSON download vs. a
+    historical cutoff date), not how the forecast itself is computed.
+
+    Returns (standings, remaining_fixtures, positions, points, summary, model).
+    """
+    tracker = LeagueTableTracker()
+    for _, row in played_this_season.sort_values("Date").iterrows():
+        tracker.snapshot(row["HomeTeam"], row["AwayTeam"], season)
+        tracker.apply_result(row["HomeTeam"], row["AwayTeam"], row["FTHG"], row["FTAG"])
+    standings_dict = tracker.current_standings()
+    teams = sorted(standings_dict.keys())
+    current = CurrentTableState(
+        teams=teams,
+        points={t: standings_dict[t]["points"] for t in teams},
+        goals_for={t: standings_dict[t]["goals_for"] for t in teams},
+        goals_against={t: standings_dict[t]["goals_against"] for t in teams},
+    )
+    standings = pd.DataFrame(standings_dict).T
+    standings.index.name = "team"
+    standings = standings.sort_values(["points", "goal_difference"], ascending=False)
+
+    model = DixonColesModel(**LIVE_FORECAST_POISSON_CONFIG).fit(train_matches)
+
+    fixtures = []
+    fixture_rows = []
+    for _, row in remaining_this_season.sort_values("Date").iterrows():
+        lam_h, lam_a = model.predict_expected_goals(row["HomeTeam"], row["AwayTeam"])
+        fixtures.append(Fixture(row["HomeTeam"], row["AwayTeam"], lam_h, lam_a))
+        fixture_rows.append({
+            "HomeTeam": row["HomeTeam"], "AwayTeam": row["AwayTeam"],
+            "expected_home_goals": lam_h, "expected_away_goals": lam_a,
+        })
+    remaining_fixtures = pd.DataFrame(fixture_rows)
+
+    positions, points = simulate_final_tables(current, fixtures, n_simulations=n_simulations, seed=seed)
+    summary = summarize_simulation(positions, points)
+
+    return standings, remaining_fixtures, positions, points, summary, model
+
+
 def build_current_forecast(
     n_simulations: int = DEFAULT_N_SIMULATIONS, seed: int | None = 0
 ) -> LiveForecast:
@@ -94,45 +148,71 @@ def build_current_forecast(
     played["FTAG"] = played["FTAG"].astype(int)
     played["Season"] = current_season
 
-    tracker = LeagueTableTracker()
-    for _, row in played.sort_values("Date").iterrows():
-        tracker.snapshot(row["HomeTeam"], row["AwayTeam"], current_season)
-        tracker.apply_result(row["HomeTeam"], row["AwayTeam"], row["FTHG"], row["FTAG"])
-    standings_dict = tracker.current_standings()
-    teams = sorted(standings_dict.keys())
-    current = CurrentTableState(
-        teams=teams,
-        points={t: standings_dict[t]["points"] for t in teams},
-        goals_for={t: standings_dict[t]["goals_for"] for t in teams},
-        goals_against={t: standings_dict[t]["goals_against"] for t in teams},
-    )
-    standings = pd.DataFrame(standings_dict).T
-    standings.index.name = "team"
-    standings = standings.sort_values(["points", "goal_difference"], ascending=False)
-
     historical = pd.read_parquet(PROJECT_ROOT / "data" / "processed" / "matches.parquet")
     train = pd.concat(
         [historical, played[historical.columns.intersection(played.columns)]], ignore_index=True
     ).sort_values("Date").reset_index(drop=True)
 
-    model = DixonColesModel(**LIVE_FORECAST_POISSON_CONFIG).fit(train)
-
-    fixtures = []
-    fixture_rows = []
-    for _, row in remaining.iterrows():
-        lam_h, lam_a = model.predict_expected_goals(row["HomeTeam"], row["AwayTeam"])
-        fixtures.append(Fixture(row["HomeTeam"], row["AwayTeam"], lam_h, lam_a))
-        fixture_rows.append({
-            "HomeTeam": row["HomeTeam"], "AwayTeam": row["AwayTeam"],
-            "expected_home_goals": lam_h, "expected_away_goals": lam_a,
-        })
-    remaining_fixtures = pd.DataFrame(fixture_rows)
-
-    positions, points = simulate_final_tables(current, fixtures, n_simulations=n_simulations, seed=seed)
-    summary = summarize_simulation(positions, points)
+    standings, remaining_fixtures, positions, points, summary, model = _forecast_from_matches(
+        train, played, remaining, current_season, n_simulations, seed
+    )
 
     return LiveForecast(
         season=current_season,
+        generated_at=pd.Timestamp.now(),
+        n_simulations=n_simulations,
+        n_played=len(played),
+        n_remaining=len(remaining),
+        standings=standings,
+        remaining_fixtures=remaining_fixtures,
+        positions=positions,
+        points=points,
+        summary=summary,
+        model=model,
+    )
+
+
+def simulate_historical_cutoff(
+    matches: pd.DataFrame,
+    season: str,
+    cutoff_date: pd.Timestamp,
+    n_simulations: int = DEFAULT_N_SIMULATIONS,
+    seed: int | None = 0,
+) -> LiveForecast:
+    """The same forecast pipeline as build_current_forecast(), replayed
+    against a historical season frozen at `cutoff_date` instead of a live
+    download - the basis of the Phase 13 simulation-calibration backtest
+    (src/simulation/calibration_backtest.py). Matches in `season` with
+    Date < cutoff_date count as "played" (used to build the current table
+    and folded into training); Date >= cutoff_date count as "remaining"
+    (predicted, not trained on).
+
+    Leakage guard, the one thing this function has to get exactly right:
+    the training set is historical seasons STRICTLY BEFORE `season`, never
+    "every other season" - `matches` (typically the full matches.parquet)
+    contains seasons chronologically AFTER `season` too, and including
+    those in training would let a backtest "predicting" e.g. 2010-11 learn
+    from data that, at that point in history, doesn't exist yet. See
+    tests/test_live_forecast.py for a regression test on exactly this.
+    """
+    season_order = sorted(matches["Season"].unique())
+    if season not in season_order:
+        raise ValueError(f"Season {season!r} not found in the given matches.")
+    prior_seasons = season_order[:season_order.index(season)]
+    prior_matches = matches[matches["Season"].isin(prior_seasons)]
+
+    season_matches = matches[matches["Season"] == season]
+    played = season_matches[season_matches["Date"] < cutoff_date].copy()
+    remaining = season_matches[season_matches["Date"] >= cutoff_date].copy().sort_values("Date")
+
+    train = pd.concat([prior_matches, played], ignore_index=True).sort_values("Date").reset_index(drop=True)
+
+    standings, remaining_fixtures, positions, points, summary, model = _forecast_from_matches(
+        train, played, remaining, season, n_simulations, seed
+    )
+
+    return LiveForecast(
+        season=season,
         generated_at=pd.Timestamp.now(),
         n_simulations=n_simulations,
         n_played=len(played),
