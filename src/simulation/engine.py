@@ -83,14 +83,27 @@ def simulate_scorelines(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Returns (home_goals, away_goals), each shape (n_simulations,
     n_fixtures) - every fixture's expected goals sampled independently for
-    every simulated season, in two vectorized calls."""
+    every simulated season, in two vectorized calls.
+
+    Cast down to int16 immediately: `rng.poisson()` has no dtype
+    parameter and always hands back int64, but a single match's goal
+    count is never remotely close to int16's ~32,000 headroom - carrying
+    int64 through the rest of the pipeline for a value this small was
+    pure waste. At realistic production scale (50,000 simulations x ~370
+    remaining fixtures, an early-season live forecast), these two arrays
+    alone were measured at ~296MB combined as int64 - the single largest
+    contributor to a peak RSS that OOM-killed the deployed backend on
+    Render's free 512MB tier (see README "Live deployment" for the full
+    incident writeup). int16 cuts that to ~74MB for the same arrays, with
+    zero change to any simulated value - this is a storage-width fix, not
+    a behavior change."""
     rng = rng or np.random.default_rng()
     lambda_home = np.array([f.lambda_home for f in fixtures])
     lambda_away = np.array([f.lambda_away for f in fixtures])
     n_fixtures = len(fixtures)
 
-    home_goals = rng.poisson(lam=lambda_home[None, :], size=(n_simulations, n_fixtures))
-    away_goals = rng.poisson(lam=lambda_away[None, :], size=(n_simulations, n_fixtures))
+    home_goals = rng.poisson(lam=lambda_home[None, :], size=(n_simulations, n_fixtures)).astype(np.int16)
+    away_goals = rng.poisson(lam=lambda_away[None, :], size=(n_simulations, n_fixtures)).astype(np.int16)
     return home_goals, away_goals
 
 
@@ -98,9 +111,15 @@ def scorelines_to_points(home_goals: np.ndarray, away_goals: np.ndarray) -> tupl
     """Standard football points: 3 for a win, 1 each for a draw, 0 for a
     loss. Pulled out as its own pure function specifically so point
     assignment can be unit-tested directly against known scorelines,
-    independent of any randomness."""
-    home_pts = np.where(home_goals > away_goals, 3, np.where(home_goals == away_goals, 1, 0))
-    away_pts = np.where(away_goals > home_goals, 3, np.where(home_goals == away_goals, 1, 0))
+    independent of any randomness.
+
+    The 3/1/0 literals are explicitly np.int16 so np.where's output stays
+    int16 rather than silently upcasting to int64 (NumPy's default int
+    type) the moment a wider-typed literal enters the expression - the
+    same memory reasoning as simulate_scorelines() above applies here."""
+    three, one, zero = np.int16(3), np.int16(1), np.int16(0)
+    home_pts = np.where(home_goals > away_goals, three, np.where(home_goals == away_goals, one, zero))
+    away_pts = np.where(away_goals > home_goals, three, np.where(home_goals == away_goals, one, zero))
     return home_pts, away_pts
 
 
