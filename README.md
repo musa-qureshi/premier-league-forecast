@@ -729,20 +729,23 @@ doing precisely to keep this rule real, not just stated.
 
 Building a forecast costs a few real seconds (live fetch + refit + 50,000
 simulations), so `app/backend/cache.py` holds one in-memory copy behind a
-lock rather than rebuilding on every request. **Two things keep it
-current**: an automatic background refresh every `FORECAST_REFRESH_
-INTERVAL_HOURS` (default 3), wired into the FastAPI app via its lifespan
-context manager and running for as long as the server process stays up;
-and `POST /simulation/refresh`, which forces one immediately (the
-frontend's "Refresh now" button calls this directly). A failed background
-refresh attempt (e.g. a transient network error) is caught and logged
-rather than left to crash the loop - the previous good forecast keeps
-being served, and `GET /meta` reports whether the last automatic attempt
-succeeded (`last_background_refresh_error`) so that's never silently
-invisible. Still a deliberately simple, single-process cache appropriate
-for a portfolio deployment - it forgets everything on restart, and a
-production service with real traffic would want a shared cache (e.g.
-Redis) and a scheduler that survives process restarts instead.
+lock rather than rebuilding on every request. It's kept current by an
+automatic background refresh every `FORECAST_REFRESH_INTERVAL_HOURS`
+(default 3), wired into the FastAPI app via its lifespan context manager
+and running for as long as the server process stays up; `POST /simulation/
+refresh` still exists to force one on demand (used by tests and available
+to any client), but the frontend deliberately has no manual "refresh now"
+control of its own - the automatic schedule is the whole point, so the UI
+only ever displays when the last refresh happened
+(`app/frontend/src/components/RefreshStatus.tsx`), it doesn't trigger one.
+A failed background refresh attempt (e.g. a transient network error) is
+caught and logged rather than left to crash the loop - the previous good
+forecast keeps being served, and `GET /meta` reports whether the last
+automatic attempt succeeded (`last_background_refresh_error`) so that's
+never silently invisible. Still a deliberately simple, single-process
+cache appropriate for a portfolio deployment - it forgets everything on
+restart, and a production service with real traffic would want a shared
+cache (e.g. Redis) and a scheduler that survives process restarts instead.
 
 ### Endpoints
 
@@ -821,6 +824,75 @@ file's existing row order for rather than guaranteeing outright - harmless
 today, since that order happens to already be date-sorted, but not
 something a reader should have to trust silently; fixed with an explicit
 sort so it's guaranteed rather than assumed.
+
+## Simulation calibration backtest (Phase 13)
+
+Phases 3-7 validated the *match-level* model's calibration - does a 70%
+predicted home-win probability actually happen ~70% of the time, checked
+across thousands of individual matches. Phase 8 validated the *simulator*,
+but only qualitatively and against exactly one historical instance (the
+2020-21 season, frozen at a January cutoff). Neither answers the question
+a simulator's headline numbers actually need to be honest about: across
+many different forecasts, does "this team has a 65% title probability"
+really correspond to that team winning the title roughly 65% of the time?
+A simulator can be built entirely correctly - Phase 8's unit tests already
+cover point assignment, valid tables, reproducibility - and still be
+systematically over- or under-confident once thousands of match-level
+probabilities compound into a season-long outcome, which is exactly the
+kind of error a single validated example can't surface either way.
+
+**Methodology**: `src/simulation/calibration_backtest.py` replays
+`src/live_forecast.py`'s exact live pipeline
+(`simulate_historical_cutoff()`, not a parallel implementation - the two
+share one core function, `_forecast_from_matches()`) against every season
+from 2003-04 onward (the standard `min_train_seasons=10` convention used
+everywhere in this project) at three cutoffs each - 25%, 50%, and 75% of
+the way through that season's fixtures - simulating the rest of the
+season from that snapshot and comparing the simulated title/top-4/
+relegation probabilities against what actually happened, which is already
+known since these are all completed historical seasons. The one property
+this depends on getting exactly right is that a backtest "predicting"
+e.g. 2010-11 must never train on data from seasons after it, even though
+the full historical dataset obviously contains that data - guarded by an
+explicit `prior_seasons = season_order[:season_order.index(season)]` cut
+and a dedicated regression test (`tests/test_live_forecast.py`,
+`TestSimulateHistoricalCutoff`) that monkeypatches the model to spy on
+exactly which seasons it was fit on.
+
+Pooling every (season, cutoff, team) instance - 23 seasons x 3 cutoffs x
+~20 teams = 1,380 rows - turns this into exactly the same predicted-
+probability/actual-outcome shape `src/evaluation/calibration.py`'s
+`calibration_curve()`/`expected_calibration_error()` were built for in
+Phase 7, reused here completely unchanged for a validation task they were
+never specifically written for - only possible because Phase 7 built them
+generically (any predicted probability paired with a 0/1 actual outcome)
+rather than hardcoded to match-level W/D/L.
+
+**Results** (`experiments/run_phase13_simulation_calibration.py`,
+20,000 simulations per instance, full results in
+`experiments/simulation_calibration_results.csv`):
+
+| Outcome | ECE |
+|---|---|
+| Title | 0.009 |
+| Top-4 (Champions League) | 0.016 |
+| Relegation | 0.020 |
+
+![Simulator calibration](experiments/simulation_calibration.png)
+
+All three curves track the diagonal closely, and all three ECEs are low -
+genuinely reassuring given how many places a compounding error (mis-
+calibrated match probabilities, a subtly wrong simulation rule, a table
+tie-break that doesn't match reality) could have shown up as systematic
+over- or under-confidence here and didn't. The wobble around the diagonal
+in the middle of the range (e.g. title's 0.5-0.6 predicted bin observing
+0.67, backed by only 12 team-instances) is sampling noise from thin bins,
+not a directional bias - it doesn't repeat in the same direction across
+neighboring bins the way a real miscalibration would, and the bins with
+real sample size (the near-0 and near-1 bins, each backed by 900-1,200
+instances) sit right on the diagonal. This is the strongest evidence in
+the project that the full pipeline - not just the underlying match model
+in isolation - produces honest probabilities.
 
 ## Repository structure
 
