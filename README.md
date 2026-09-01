@@ -13,7 +13,7 @@ highly stochastic, and the system is built and evaluated on that premise.
 
 ## Project status
 
-🚧 **Phase 12 (React frontend) complete - all 12 planned phases done.** See the roadmap below.
+🚧 **All 12 originally-planned phases done, plus two follow-on phases added afterward.** See the roadmap below.
 
 - [x] Phase 1 — Data ingestion & cleaning
 - [x] Phase 2 — Feature engineering (Elo, rolling form, league context)
@@ -27,6 +27,8 @@ highly stochastic, and the system is built and evaluated on that premise.
 - [x] Phase 10 — Hyperparameter tuning
 - [x] Phase 11 — API (FastAPI)
 - [x] Phase 12 — Frontend dashboard (React)
+- [x] Phase 13 — Simulation calibration backtest
+- [x] Phase 14 — Live deployment (Docker + Render + Vercel)
 
 ## Data
 
@@ -894,12 +896,117 @@ instances) sit right on the diagonal. This is the strongest evidence in
 the project that the full pipeline - not just the underlying match model
 in isolation - produces honest probabilities.
 
+## Live deployment (Phase 14)
+
+**Live demo:** _add the deployed URLs here once deployed - see the steps below._
+
+A project a reviewer can actually open in a browser is worth more than the
+same project sitting in a cloned repo, so the backend and frontend are each
+independently deployable to free hosting tiers - the backend as a Docker
+container (works on Render, Railway, Fly.io, or any other host that builds
+from a `Dockerfile`), the frontend as a static Vite build (works on Vercel,
+Netlify, or any static host). Neither needs a paid tier for a portfolio's
+level of traffic.
+
+### Backend -> Render (or any Docker host)
+
+The root [`Dockerfile`](Dockerfile) builds a standalone image for
+`app/backend/` alone (not the frontend - see its own header comment on
+scope). Two things make it noticeably leaner than just containerizing the
+whole project:
+
+- **[`requirements-api.txt`](requirements-api.txt)**, a verified minimal
+  subset of the repo-root `requirements.txt` - only what
+  `app/backend/main.py`'s import graph actually reaches at runtime
+  (`fastapi`, `uvicorn`, `pandas`, `numpy`, `pyarrow`, `scipy`, `requests`,
+  `pyyaml`). Confirmed by statically walking that import graph rather than
+  guessed: `scikit-learn`, `xgboost`, `statsmodels`, `matplotlib`/
+  `seaborn`, `shap`, and `kaggle` are all in the full requirements.txt but
+  never imported by anything the live API path calls (only
+  `DixonColesModel` is used for the live forecast; the other three model
+  families are backtesting/notebook-only, and `src/data/ingest.py`'s
+  Kaggle import is function-local, never triggered by the live
+  openfootball-only fetch path). This cut the built image from 2.19GB to
+  855MB and the dependency-install build step from ~142s to ~48s (both
+  measured locally with `docker build`, not estimated).
+- **`data/processed/matches.parquet`** is committed as a deliberate,
+  documented exception to `.gitignore`'s general "processed data is
+  regeneratable, don't commit it" rule (see the exception's own comment
+  there) - it's small (~230KB) and the deployed container has no Kaggle
+  credentials and can't reach football-data.co.uk anyway (see "Data"
+  above), so committing this one already-cleaned file is simpler and more
+  reliable than trying to regenerate it at build time.
+
+Also relevant to a real deployment rather than a dev machine that's
+usually already warm: `app/backend/main.py`'s `lifespan` now fires a
+non-blocking cache-warmup task at startup (`_warm_cache_on_startup()`) -
+the app still starts accepting connections (health checks included)
+immediately, but the first real visitor no longer eats the full build cost
+(live fetch + refit + 50,000 simulations) themselves the way the original
+purely-lazy design would on a just-booted container.
+
+**Verified locally before writing these steps**: built the image
+(`docker build -t plforecast-api .`), ran it (`docker run -p 8123:8000
+plforecast-api`), and confirmed `/health` responds instantly while the
+warmup task is still running, `/meta` and `/standings` return real live
+2026-27 season data within a few seconds of container start, and
+`/matches/predict?home=Arsenal&away=Liverpool` returns the same shape of
+output already documented above - not assumed to work from the Dockerfile
+alone.
+
+To deploy (needs your own free Render account):
+
+1. Push this repo to GitHub (already the case if you're reading this there).
+2. Render dashboard -> **New +** -> **Blueprint** -> point it at this repo.
+   [`render.yaml`](render.yaml) declares the whole service (Docker build,
+   free plan, `/health` as the health-check path) - Render reads it and
+   the rest is a couple of confirmation clicks. (No blueprint access, or
+   prefer manual? **New +** -> **Web Service** -> this repo -> environment
+   **Docker** - Render detects the root `Dockerfile` automatically.)
+3. Once deployed, Render gives you a URL like
+   `https://premier-league-forecast-api.onrender.com`. Sanity-check it:
+   `curl https://<your-url>/health` should return `{"status":"ok"}`.
+
+Free-tier caveat worth knowing about (not specific to this project): Render's
+free web services spin down after 15 minutes idle, so a visitor after a
+quiet period will wait ~30-50s for the container to boot before the warmup
+task above even starts - a real limitation of the free tier, not something
+this project's code can hide. A paid "always-on" instance (or a different
+host without that spin-down behavior) removes it entirely.
+
+### Frontend -> Vercel (or any static host)
+
+No Docker needed here - `app/frontend/` is a standard Vite + React app,
+and Vercel's zero-config Vite detection handles the build. This is a
+monorepo (frontend isn't at the repo root), so the one thing to set
+explicitly is the project's root directory:
+
+1. Vercel dashboard -> **Add New** -> **Project** -> import this repo.
+2. **Root Directory**: `app/frontend` (Vercel auto-detects the Vite
+   framework preset and `npm run build` / `dist` once that's set - no
+   further build config needed).
+3. **Environment Variables**: add `VITE_API_BASE` = your Render backend
+   URL from above (e.g. `https://premier-league-forecast-api.onrender.com`
+   - no trailing slash). Without this the deployed frontend falls back to
+   `api.ts`'s dev default of `http://127.0.0.1:8000`, which won't resolve
+   to anything from a visitor's browser.
+4. Deploy. Vercel gives you a URL like
+   `https://premier-league-forecast.vercel.app`.
+
+The backend's CORS policy is already wide open
+(`app/backend/main.py`, `allow_origins=["*"]`) precisely so this works
+with zero extra configuration on the backend side regardless of which
+frontend origin ends up calling it - see that file's own comment for why
+that's a reasonable choice for this API specifically (no auth, no
+user-specific state, public football data only).
+
 ## Repository structure
 
 ```
 data/
   raw/                 # untouched downloads (gitignored)
-  processed/           # cleaned matches.parquet (gitignored, regeneratable)
+  processed/           # matches.parquet (committed - see .gitignore's exception; deployed
+                        #   backend reads it directly), features.parquet (gitignored, regeneratable)
   external/            # team_name_map.csv and similar small config-like data
 notebooks/             # exploration only - no load-bearing logic lives here
 src/
@@ -907,7 +1014,7 @@ src/
   features/            # Elo, rolling stats, league table state, dataset assembly
   models/               # baseline, Elo, Poisson/Dixon-Coles, logistic, XGBoost (all done, Phases 3-6)
   evaluation/           # metrics (log loss/Brier/RPS), expanding-window backtest, calibration, tuning
-  simulation/            # Monte Carlo season simulator (engine + summary stats)
+  simulation/            # Monte Carlo season simulator (engine + summary stats), calibration_backtest.py (Phase 13)
   visualization/          # chart helpers
   live_forecast.py        # live-data -> model -> simulation pipeline (shared by the CLI script and API)
 experiments/            # experiment-runner scripts + versioned backtest/forecast results
@@ -916,6 +1023,9 @@ app/
   backend/               # FastAPI - no modeling logic, calls src/live_forecast.py (done, Phase 11)
   frontend/               # React + TypeScript dashboard (done, Phase 12 - see its own README)
 configs/                 # data.yaml and future model/simulation configs
+Dockerfile               # backend deploy image (Phase 14) - see requirements-api.txt, render.yaml
+requirements-api.txt      # minimal runtime deps for the deployed backend, vs. requirements.txt for dev
+render.yaml               # Render Blueprint spec for one-step backend deployment
 ```
 
 ## Setup
@@ -931,4 +1041,12 @@ python -m experiments.run_phase8_simulation_validation  # simulator validated ag
 python -m experiments.run_phase9_live_forecast           # live 2026-27 forecast
 python -m experiments.run_phase10_tuning                 # hyperparameter tuning (a few minutes)
 pytest tests/
+```
+
+To build and run the deployable backend image locally before pushing anywhere (see "Live deployment" above for the full story):
+
+```bash
+docker build -t plforecast-api .
+docker run -p 8000:8000 plforecast-api
+curl http://127.0.0.1:8000/health
 ```

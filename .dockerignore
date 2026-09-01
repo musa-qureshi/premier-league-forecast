@@ -1,0 +1,27 @@
+# Keeps the build context (and image) small and avoids invalidating the
+# pip-install cache layer for reasons unrelated to dependencies. Mirrors
+# .gitignore's intent but is deliberately its own file: some things are
+# git-tracked but still don't belong in this image (tests/, notebooks/,
+# experiments/, app/frontend/ - see Dockerfile's own comment on scope).
+.git/
+.venv/
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+tests/
+notebooks/
+experiments/
+app/frontend/
+data/raw/
+data/processed/features.parquet
+
+.env
+.env.local
+kaggle.json
+.kaggle/
+
+README.md
+*.md

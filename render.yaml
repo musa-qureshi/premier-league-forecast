@@ -1,0 +1,15 @@
+# Render "Blueprint" spec (https://render.com/docs/blueprint-spec) - lets
+# Render's dashboard ("New +" -> "Blueprint", point it at this repo) read
+# and apply this whole service definition in one step instead of manual
+# per-field setup. Deploying still requires a Render account and a click
+# through their dashboard - nothing here runs on its own.
+services:
+  - type: web
+    name: premier-league-forecast-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: FORECAST_REFRESH_INTERVAL_HOURS
+        value: "3"
