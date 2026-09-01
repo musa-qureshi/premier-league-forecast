@@ -898,7 +898,9 @@ in isolation - produces honest probabilities.
 
 ## Live deployment (Phase 14)
 
-**Live demo:** _add the deployed URLs here once deployed - see the steps below._
+**Live demo:** [premier-league-forecast.vercel.app](https://premier-league-forecast.vercel.app)
+(frontend) · [premier-league-forecast-api.onrender.com](https://premier-league-forecast-api.onrender.com)
+(backend API - try `/docs` for interactive OpenAPI docs, or `/health`).
 
 A project a reviewer can actually open in a browser is worth more than the
 same project sitting in a cloned repo, so the backend and frontend are each
@@ -973,6 +975,43 @@ quiet period will wait ~30-50s for the container to boot before the warmup
 task above even starts - a real limitation of the free tier, not something
 this project's code can hide. A paid "always-on" instance (or a different
 host without that spin-down behavior) removes it entirely.
+
+### The free-tier OOM crash, and the actual fix
+
+The first real deployment attempt crashed - `/health` returned a fast `502`
+(nothing there to answer, not a slow timeout), which pointed at the process
+dying outright rather than merely running slowly. Reproduced locally by
+running the built image under the exact same `--memory=512m` cap Render's
+free tier imposes: confirmed, the container gets OOM-killed a few seconds
+after boot, every time.
+
+The cause: `src/simulation/engine.py` simulates every remaining fixture's
+scoreline for every simulated season as one big `(n_simulations x
+n_fixtures)` NumPy array - and `rng.poisson()` always returns `int64` (8
+bytes) with no way to ask it for anything narrower. At the live forecast's
+actual production scale early in a season (50,000 simulations x ~370
+remaining fixtures), the four such arrays this module builds (home/away
+goals, home/away points) measured at a combined **~958MB peak RSS** -
+comfortably past Render's 512MB limit, confirmed by direct profiling
+(`resource.getrusage().ru_maxrss`) inside the container, not guessed at.
+
+The fix (in `simulate_scorelines()`/`scorelines_to_points()`): cast those
+four arrays down to `int16` immediately after generation. A football
+score is never within three orders of magnitude of int16's ~32,000
+headroom, so this changes zero simulated values - it's a storage-width
+fix, not a behavior change, and every existing simulation-engine test
+still passes unmodified. That alone cut the measured peak from 958MB to
+**~450MB**, re-verified against the real containerized app (not just the
+isolated profiling script) surviving multiple real requests under the
+identical 512MB cap with margin to spare.
+
+The broader lesson this left behind: `docker build` succeeding and a
+handful of quick local smoke-test requests passing (both done before the
+first deploy - see above) verify *correctness*, not *resource footprint*
+under a real constrained host - those are genuinely different questions,
+and a free tier's hard memory ceiling is exactly the kind of constraint
+that only shows up once something reasonably close to production scale
+and a matching resource limit are both actually exercised together.
 
 ### Frontend -> Vercel (or any static host)
 
