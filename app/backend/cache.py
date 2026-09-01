@@ -93,10 +93,14 @@ def refresh_once() -> bool:
 
 async def background_refresh_loop(interval_hours: float = DEFAULT_REFRESH_INTERVAL_HOURS) -> None:
     """Runs forever (until cancelled), calling refresh_once() every
-    `interval_hours`. Does NOT refresh immediately on startup - the first
-    real request already triggers a build via get_forecast()'s own
-    lazy-init, so an immediate duplicate build here would just waste the
-    first few seconds of server startup for no benefit."""
+    `interval_hours`. Does NOT itself refresh immediately on startup - a
+    separate fire-and-forget warmup task (app/backend/main.py's
+    `_warm_cache_on_startup()`) already primes the cache as soon as the
+    process boots, so an immediate duplicate build here would just waste
+    a few seconds of server startup for no benefit. If that warmup hasn't
+    finished (or failed) by the time this loop's first sleep ends, or by
+    the time any request arrives in between, get_forecast()'s own
+    lazy-init still covers it either way."""
     while True:
         await asyncio.sleep(interval_hours * 3600)
         await asyncio.to_thread(refresh_once)

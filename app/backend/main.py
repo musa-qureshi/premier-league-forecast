@@ -41,8 +41,35 @@ REFRESH_INTERVAL_HOURS = float(
 )
 
 
+async def _warm_cache_on_startup() -> None:
+    """Fire-and-forget: builds the forecast once as soon as the process
+    boots, rather than leaving whoever sends the very first request to eat
+    the build cost (a live fetch + refit + 50,000 simulations, a few real
+    seconds). Barely mattered on a dev machine that's usually already
+    warm; matters a lot on a real deployment (Phase 14) where a visitor
+    hitting a just-booted container is a normal case, not an edge case.
+
+    Deliberately NOT awaited in lifespan() before yield - the app must
+    start accepting connections (health checks included) immediately, not
+    block on a live network fetch. If this fails (or simply hasn't
+    finished yet), get_forecast()'s own lazy-init in every endpoint
+    already covers it: the next request just builds it there instead,
+    exactly as it always has.
+
+    Calls the module-level `get_forecast` name (not cache.refresh_once())
+    on purpose, so tests/test_api.py's `monkeypatch.setattr(main_module,
+    "get_forecast", ...)` covers this path too - no second, untested route
+    to a real network call.
+    """
+    try:
+        await asyncio.to_thread(get_forecast, force_refresh=True)
+    except Exception as e:  # noqa: BLE001 - startup warmup must never crash the app
+        print(f"[main] startup cache warmup failed (a normal request will retry): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    asyncio.create_task(_warm_cache_on_startup())
     task = asyncio.create_task(background_refresh_loop(REFRESH_INTERVAL_HOURS))
     print(f"[main] background refresh loop started, every {REFRESH_INTERVAL_HOURS}h")
     yield

@@ -11,6 +11,14 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+# Exception: matches.parquet is small (~230KB) and the deployed backend
+# (Dockerfile) reads it directly at runtime with no ingestion pipeline
+# available in that environment (no Kaggle credentials there, and
+# football-data.co.uk is unreachable from this project's dev environment -
+# see configs/data.yaml) - committing this one processed, already-cleaned
+# file is simpler and more reliable than fetching it at build/boot time.
+# features.parquet stays regeneratable-only; nothing at runtime needs it.
+!data/processed/matches.parquet
 
 # --- Kaggle credentials - never commit ---
 kaggle.json
