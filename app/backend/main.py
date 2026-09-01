@@ -11,11 +11,15 @@ their own tests independent of this API layer.
 
 from __future__ import annotations
 
+import asyncio
+import os
+from contextlib import asynccontextmanager
+
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.backend.cache import get_forecast
+from app.backend.cache import DEFAULT_REFRESH_INTERVAL_HOURS, background_refresh_loop, cache_status, get_forecast
 from app.backend.schemas import (
     ForecastMeta,
     MatchPrediction,
@@ -28,6 +32,23 @@ from app.backend.schemas import (
 from src.models.poisson_model import top_scorelines
 from src.simulation.summary import position_distribution
 
+# How often the cache refreshes itself in the background, in hours -
+# configurable via an env var so a real deployment can tune it (e.g.
+# faster during a live matchday, slower otherwise) without a code change.
+# See app/backend/cache.py for the full reasoning on why this exists.
+REFRESH_INTERVAL_HOURS = float(
+    os.environ.get("FORECAST_REFRESH_INTERVAL_HOURS", DEFAULT_REFRESH_INTERVAL_HOURS)
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(background_refresh_loop(REFRESH_INTERVAL_HOURS))
+    print(f"[main] background refresh loop started, every {REFRESH_INTERVAL_HOURS}h")
+    yield
+    task.cancel()
+
+
 app = FastAPI(
     title="Premier League Probabilistic Forecast API",
     description=(
@@ -39,6 +60,7 @@ app = FastAPI(
         "full methodology, backtesting results, and known limitations."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Frontend (Phase 12) runs on a separate origin during development (Vite's
@@ -57,12 +79,16 @@ app.add_middleware(
 
 
 def _forecast_meta(forecast) -> dict:
+    status = cache_status()
     return {
         "season": forecast.season,
         "generated_at": forecast.generated_at.isoformat(),
         "n_simulations": forecast.n_simulations,
         "n_played": forecast.n_played,
         "n_remaining": forecast.n_remaining,
+        "refresh_interval_hours": REFRESH_INTERVAL_HOURS,
+        "last_background_refresh_attempt_at": status["last_background_refresh_attempt_at"],
+        "last_background_refresh_error": status["last_background_refresh_error"],
     }
 
 

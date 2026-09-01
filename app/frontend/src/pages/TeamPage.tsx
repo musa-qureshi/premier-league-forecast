@@ -1,12 +1,17 @@
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { PointsRange } from "../components/PointsRange";
 import { PositionDistributionChart } from "../components/PositionDistributionChart";
 import { StatTile } from "../components/StatTile";
+import { TeamBadge } from "../components/TeamBadge";
 import { useFetch } from "../hooks/useFetch";
+
+const FIXTURES_PER_PAGE = 5;
 
 export function TeamPage() {
   const { team = "" } = useParams<{ team: string }>();
+  const [fixturePage, setFixturePage] = useState(0);
 
   const forecast = useFetch(() => api.teamForecast(team), [team]);
   const standings = useFetch(() => api.standings(), []);
@@ -14,13 +19,13 @@ export function TeamPage() {
   const upcoming = useFetch(() => api.upcomingMatches(), []);
 
   if (forecast.loading || standings.loading) {
-    return <p className="status-text">Loading&hellip;</p>;
+    return <div className="page-shell"><p className="status-text">Loading&hellip;</p></div>;
   }
   if (forecast.error) {
     return (
-      <div>
+      <div className="page-shell">
         <p className="status-text status-text--error">{forecast.error}</p>
-        <Link to="/">&larr; Back to standings</Link>
+        <Link to="/" className="back-link">&larr; Back to standings</Link>
       </div>
     );
   }
@@ -30,13 +35,20 @@ export function TeamPage() {
   const allTeamFixtures = (upcoming.data ?? []).filter(
     (m) => m.home_team === team || m.away_team === team
   );
-  const NEXT_N_FIXTURES = 5;
-  const teamFixtures = allTeamFixtures.slice(0, NEXT_N_FIXTURES);
+
+  const pageStart = fixturePage * FIXTURES_PER_PAGE;
+  const pageFixtures = allTeamFixtures.slice(pageStart, pageStart + FIXTURES_PER_PAGE);
+  const hasPrev = fixturePage > 0;
+  const hasNext = pageStart + FIXTURES_PER_PAGE < allTeamFixtures.length;
 
   return (
-    <div>
-      <Link to="/">&larr; Back to standings</Link>
-      <h1>{team}</h1>
+    <div className="page-shell">
+      <Link to="/" className="back-link">&larr; Back to standings</Link>
+
+      <div className="team-heading">
+        <TeamBadge team={team} size={48} />
+        <h1>{team}</h1>
+      </div>
 
       <div className="stat-tile-grid">
         {teamStanding && (
@@ -71,7 +83,7 @@ export function TeamPage() {
         <StatTile label="Expected final points" value={f.expected_points.toFixed(1)} />
       </div>
 
-      <section>
+      <section className="section-card">
         <h2>Finishing-position distribution</h2>
         <p className="section-caption">
           Across every simulated season, how often {team} finished in each position.
@@ -84,7 +96,7 @@ export function TeamPage() {
         )}
       </section>
 
-      <section>
+      <section className="section-card">
         <h2>Points distribution</h2>
         <PointsRange
           p05={f.points_p05}
@@ -94,23 +106,36 @@ export function TeamPage() {
         />
       </section>
 
-      <section>
-        <h2>Upcoming fixtures</h2>
-        <p className="section-caption">
-          Next {teamFixtures.length} of {allTeamFixtures.length} remaining fixtures this season,
-          with each side's expected goals from the fitted model.
-        </p>
+      <section className="section-card">
+        <div className="section-header-row">
+          <div>
+            <h2>Upcoming fixtures</h2>
+            <p className="section-caption">
+              {allTeamFixtures.length === 0
+                ? "No remaining fixtures."
+                : `Fixtures ${pageStart + 1}–${Math.min(pageStart + FIXTURES_PER_PAGE, allTeamFixtures.length)} of ${allTeamFixtures.length} remaining, with each side's expected goals from the fitted model.`}
+            </p>
+          </div>
+          {allTeamFixtures.length > FIXTURES_PER_PAGE && (
+            <div className="fixture-pager">
+              <button type="button" disabled={!hasPrev} onClick={() => setFixturePage((p) => p - 1)}>
+                &larr; Previous
+              </button>
+              <button type="button" disabled={!hasNext} onClick={() => setFixturePage((p) => p + 1)}>
+                Next &rarr;
+              </button>
+            </div>
+          )}
+        </div>
         {upcoming.loading && <p className="status-text">Loading&hellip;</p>}
-        {teamFixtures.length === 0 && !upcoming.loading && (
-          <p className="status-text">No remaining fixtures.</p>
-        )}
         <ul className="fixture-list">
-          {teamFixtures.map((m, i) => {
+          {pageFixtures.map((m, i) => {
             const isHome = m.home_team === team;
             const opponent = isHome ? m.away_team : m.home_team;
             return (
               <li key={i}>
-                <span className="fixture-venue">{isHome ? "vs" : "at"}</span>{" "}
+                <TeamBadge team={opponent} size={24} />
+                <span className="fixture-venue">{isHome ? "(H)" : "(A)"}</span>
                 <Link to={`/teams/${encodeURIComponent(opponent)}`}>{opponent}</Link>
                 <span className="fixture-xg">
                   xG {m.expected_home_goals.toFixed(2)}&ndash;{m.expected_away_goals.toFixed(2)}
