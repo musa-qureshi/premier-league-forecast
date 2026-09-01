@@ -262,12 +262,12 @@ snapshotting "does the league have any ratings yet" once per match, before
 either side is looked up - see `src/features/elo.py::EloRatingSystem.
 process_match` and the regression test in `test_elo.py`.
 
-199 tests pass across the full suite (`pytest tests/`), all against
+202 tests pass across the full suite (`pytest tests/`), all against
 synthetic data - no test depends on the downloaded dataset being present.
 (This count was 68 as of Phase 2; Phases 3-11 added the metrics, baseline,
 Elo-outcome, backtest, Poisson/Dixon-Coles, logistic-regression, XGBoost,
 calibration, simulation-engine/summary, multi-source data-merge,
-hyperparameter-tuning, and API tests.)
+hyperparameter-tuning, API, and background-refresh-cache tests.)
 
 ## Model evaluation (Phase 3)
 
@@ -729,12 +729,20 @@ doing precisely to keep this rule real, not just stated.
 
 Building a forecast costs a few real seconds (live fetch + refit + 50,000
 simulations), so `app/backend/cache.py` holds one in-memory copy behind a
-lock rather than rebuilding on every request - a deliberately simple,
-single-process cache appropriate for a portfolio deployment (a production
-service with real traffic would want a shared cache and a scheduled
-refresh job instead). `POST /simulation/refresh` is the only endpoint that
-does real work; everything else reads whatever it (or the automatic
-first-request build) last produced.
+lock rather than rebuilding on every request. **Two things keep it
+current**: an automatic background refresh every `FORECAST_REFRESH_
+INTERVAL_HOURS` (default 3), wired into the FastAPI app via its lifespan
+context manager and running for as long as the server process stays up;
+and `POST /simulation/refresh`, which forces one immediately (the
+frontend's "Refresh now" button calls this directly). A failed background
+refresh attempt (e.g. a transient network error) is caught and logged
+rather than left to crash the loop - the previous good forecast keeps
+being served, and `GET /meta` reports whether the last automatic attempt
+succeeded (`last_background_refresh_error`) so that's never silently
+invisible. Still a deliberately simple, single-process cache appropriate
+for a portfolio deployment - it forgets everything on restart, and a
+production service with real traffic would want a shared cache (e.g.
+Redis) and a scheduler that survives process restarts instead.
 
 ### Endpoints
 
@@ -748,7 +756,7 @@ first-request build) last produced.
 | `GET /teams/{team}/position-distribution` | P(finish in position N) for every N, one team |
 | `GET /matches/upcoming` | Remaining fixtures with expected goals |
 | `GET /matches/predict?home=X&away=Y` | Expected goals, W/D/L probabilities, top-5 most likely scorelines for any two teams |
-| `POST /simulation/refresh` | Forces a live re-fetch + refit + re-simulation |
+| `POST /simulation/refresh` | Forces a live re-fetch + refit + re-simulation (also runs automatically every few hours) |
 
 Unknown team names return a 404 (validated against the current season's
 actual teams from live data, not hardcoded); `/matches/predict` with two

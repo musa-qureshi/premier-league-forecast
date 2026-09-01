@@ -69,3 +69,12 @@ class ForecastMeta(BaseModel):
     n_simulations: int
     n_played: int
     n_remaining: int
+    refresh_interval_hours: float = Field(
+        ..., description="How often the server automatically refreshes the forecast in the background"
+    )
+    last_background_refresh_attempt_at: str | None = Field(
+        None, description="When the background auto-refresh last attempted a rebuild (null if it hasn't run yet)"
+    )
+    last_background_refresh_error: str | None = Field(
+        None, description="Error from the most recent background refresh attempt, if it failed"
+    )

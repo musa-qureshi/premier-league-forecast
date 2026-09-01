@@ -61,10 +61,22 @@ export interface ForecastMeta {
   n_simulations: number;
   n_played: number;
   n_remaining: number;
+  refresh_interval_hours: number;
+  last_background_refresh_attempt_at: string | null;
+  last_background_refresh_error: string | null;
 }
 
 async function getJSON<T>(path: string): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail ?? `${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function postJSON<T>(path: string): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, { method: "POST" });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.detail ?? `${response.status} ${response.statusText}`);
@@ -84,4 +96,5 @@ export const api = {
     getJSON<MatchPrediction>(
       `/matches/predict?home=${encodeURIComponent(home)}&away=${encodeURIComponent(away)}`
     ),
+  refreshSimulation: () => postJSON<ForecastMeta>("/simulation/refresh"),
 };
