@@ -76,7 +76,10 @@ def _toy_forecast() -> LiveForecast:
         n_simulations=500, n_played=12, n_remaining=2,
         standings=standings, remaining_fixtures=remaining_fixtures,
         positions=positions, points=points, summary=summary, model=model,
-        matchweek_standings=[{"matchweek": 1, "standings": matchweek_1_standings}],
+        # Reuses the same `summary` object as the "current" forecast for
+        # this test's matchweek-1 entry too - the API test only needs a
+        # summary shaped like a real one, not a numerically distinct one.
+        matchweek_standings=[{"matchweek": 1, "standings": matchweek_1_standings, "summary": summary}],
     )
 
 
@@ -131,6 +134,17 @@ class TestStandingsHistory:
         alpha = next(row for row in mw1 if row["team"] == "Alpha")
         assert alpha["points"] == 3
         assert alpha["played"] == 1
+
+    def test_matchweek_forecast_shape_matches_current_forecast(self, client):
+        # The whole point of this endpoint over standings_by_matchweek()
+        # alone: each matchweek must ALSO carry the model's own simulated
+        # probabilities as of that point, not just the raw table.
+        body = client.get("/standings/history").json()
+        mw1_forecast = body[0]["forecast"]
+        assert {row["team"] for row in mw1_forecast} == {"Alpha", "Bravo", "Charlie", "Delta"}
+        alpha = next(row for row in mw1_forecast if row["team"] == "Alpha")
+        assert "title_probability" in alpha
+        assert "relegation_probability" in alpha
 
     def test_empty_when_no_matchweeks_complete(self, client):
         main_module.get_forecast().matchweek_standings = []

@@ -231,6 +231,18 @@ class TestStandingsByMatchweek:
         result = standings_by_matchweek(_matches_with_round(rows), season="2023-24")
         assert [s["matchweek"] for s in result] == [1, 2]
 
+    def test_cutoff_date_is_the_matchweeks_last_played_date(self):
+        # live_forecast.py::_matchweek_forecasts relies on this to split
+        # "played as of this matchweek" from "remaining" when refitting
+        # the model for a historical matchweek's own forecast - it must
+        # be the exact date of the round's LAST match, not e.g. its first.
+        rows = [
+            ("2023-08-12", "Arsenal", "Watford", 3, 0, 1),
+            ("2023-08-13", "Chelsea", "Fulham", 1, 1, 1),  # same round, later date
+        ]
+        result = standings_by_matchweek(_matches_with_round(rows), season="2023-24")
+        assert result[0]["cutoff_date"] == pd.Timestamp("2023-08-13")
+
     def test_matchweek_completing_across_multiple_dates(self):
         # A round's fixtures are often spread across a weekend (or, less
         # often, rearranged onto a later date entirely) - completeness

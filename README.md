@@ -19,7 +19,7 @@ forecast, not a prediction of what *will* happen.
 - Simulates full seasons (50,000+ Monte Carlo trials, ~60k sims/sec) into title/European/relegation probabilities.
 - Validates the simulator's own calibration across 69 historical (season, cutoff) instances, not just one example.
 - Refreshes a live current-season forecast automatically and serves it via a FastAPI backend + React dashboard.
-- Lets you browse the standings table as it stood after any completed matchweek this season, computed on demand rather than saved.
+- Lets you browse both the table and the model's own forecast as they stood after any completed matchweek, each refit and re-simulated on only the data available at that point.
 - Deployed: Docker backend on Render, static frontend on Vercel.
 
 ## Results

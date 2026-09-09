@@ -29,6 +29,7 @@ export interface TeamForecast {
 export interface MatchweekStandings {
   matchweek: number;
   standings: TeamStanding[];
+  forecast: TeamForecast[];
 }
 
 export interface PositionDistribution {

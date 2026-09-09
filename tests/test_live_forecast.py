@@ -126,3 +126,51 @@ class TestSimulateHistoricalCutoff:
             matches, season="2001-02", cutoff_date=pd.Timestamp("2001-09-15"), n_simulations=50
         )
         assert forecast.generated_at.tzinfo is not None
+
+
+def _current_season_matches_with_one_complete_and_one_incomplete_round() -> pd.DataFrame:
+    """Round 1: both fixtures played. Round 2: one played, one not -
+    round 2 must NOT be treated as complete."""
+    rows = [
+        {"Date": pd.Timestamp("2003-08-01"), "HomeTeam": "Alpha", "AwayTeam": "Bravo",
+         "FTHG": 1, "FTAG": 0, "Round": 1},
+        {"Date": pd.Timestamp("2003-08-01"), "HomeTeam": "Charlie", "AwayTeam": "Delta",
+         "FTHG": 2, "FTAG": 2, "Round": 1},
+        {"Date": pd.Timestamp("2003-08-08"), "HomeTeam": "Alpha", "AwayTeam": "Charlie",
+         "FTHG": None, "FTAG": None, "Round": 2},
+        {"Date": pd.Timestamp("2003-08-08"), "HomeTeam": "Bravo", "AwayTeam": "Delta",
+         "FTHG": 1, "FTAG": 1, "Round": 2},
+    ]
+    return pd.DataFrame(rows)
+
+
+class TestMatchweekForecasts:
+    def test_computes_a_forecast_for_each_complete_matchweek(self, monkeypatch):
+        _SpyModel.captured_train_seasons = []
+        monkeypatch.setattr(live_forecast_module, "DixonColesModel", _SpyModel)
+        historical = _synthetic_multi_season_matches()
+        all_current = _current_season_matches_with_one_complete_and_one_incomplete_round()
+
+        results = live_forecast_module._matchweek_forecasts(historical, all_current, "2003-04", seed=0)
+
+        assert [r["matchweek"] for r in results] == [1]  # round 2 incomplete - excluded
+        assert "summary" in results[0] and "standings" in results[0]
+        assert len(_SpyModel.captured_train_seasons) == 1  # exactly one refit, for matchweek 1
+
+    def test_cached_matchweek_is_reused_without_recomputing(self, monkeypatch):
+        # The whole point of the cache parameter: a completed matchweek's
+        # forecast never changes, so passing it back in must skip the
+        # (expensive) refit + re-simulate entirely - verified here by
+        # asserting the model was never even fit again.
+        _SpyModel.captured_train_seasons = []
+        monkeypatch.setattr(live_forecast_module, "DixonColesModel", _SpyModel)
+        historical = _synthetic_multi_season_matches()
+        all_current = _current_season_matches_with_one_complete_and_one_incomplete_round()
+
+        already_computed = {"matchweek": 1, "standings": "stub-standings", "summary": "stub-summary"}
+        results = live_forecast_module._matchweek_forecasts(
+            historical, all_current, "2003-04", seed=0, cached={1: already_computed}
+        )
+
+        assert results == [already_computed]
+        assert len(_SpyModel.captured_train_seasons) == 0  # no refit at all - reused as-is

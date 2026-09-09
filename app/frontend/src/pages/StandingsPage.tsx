@@ -107,22 +107,23 @@ export function StandingsPage() {
   const [sort, setSort] = useState<SortConfig>({ key: "table", direction: DEFAULT_DIRECTION.table });
   const [selectedMatchweek, setSelectedMatchweek] = useState<number | "current">("current");
 
-  const rows: Row[] = useMemo(() => {
-    const forecastByTeam = new Map<string, TeamForecast>((forecast.data ?? []).map((f) => [f.team, f]));
-    const base = (standings.data ?? []).map((s) => ({ ...s, forecast: forecastByTeam.get(s.team) }));
-    return sortRows(base, sort);
-  }, [standings.data, forecast.data, sort]);
-
   const isHistorical = selectedMatchweek !== "current";
   const historyEntry = isHistorical
     ? (history.data ?? []).find((h) => h.matchweek === selectedMatchweek)
     : undefined;
-  // A historical matchweek has no forecast data attached at all (the
-  // Monte Carlo forecast is only ever computed for "right now", not
-  // replayed for a past point in the season) - falls back to the plain
-  // standings row shape, which the shared Row type already allows since
-  // `forecast` there is optional.
-  const displayRows: Row[] = isHistorical ? (historyEntry?.standings ?? []) : rows;
+  // A selected matchweek's standings/forecast come from /standings/history
+  // instead of /standings + /forecast - same shape either way (each
+  // matchweek there carries its OWN refit-and-resimulated forecast, not
+  // the current one replayed backward - see src/live_forecast.py::
+  // _matchweek_forecasts), so both modes merge through the same logic.
+  const baseStandings = isHistorical ? historyEntry?.standings ?? [] : standings.data ?? [];
+  const baseForecast = isHistorical ? historyEntry?.forecast ?? [] : forecast.data ?? [];
+
+  const displayRows: Row[] = useMemo(() => {
+    const forecastByTeam = new Map<string, TeamForecast>(baseForecast.map((f) => [f.team, f]));
+    const base = baseStandings.map((s) => ({ ...s, forecast: forecastByTeam.get(s.team) }));
+    return sortRows(base, sort);
+  }, [baseStandings, baseForecast, sort]);
 
   function handleSort(key: SortKey) {
     setSort((prev) =>
@@ -151,10 +152,10 @@ export function StandingsPage() {
       <div className="page-heading">
         <div className="page-heading-row">
           <div>
-            <h1>{isHistorical ? `Table after Matchweek ${selectedMatchweek}` : "Current standings & forecast"}</h1>
+            <h1>{isHistorical ? `Matchweek ${selectedMatchweek}: table & forecast` : "Current standings & forecast"}</h1>
             <p className="page-subtitle">
               {isHistorical
-                ? "The final table exactly as it stood once every fixture in this matchweek had been played."
+                ? "The table, and what the model itself simulated, exactly as they stood once this matchweek finished - refit and re-run on only the data available at that point, not the current forecast replayed backward."
                 : "Simulated across 50,000 seasons from the current table and remaining fixtures."}
             </p>
           </div>
@@ -187,41 +188,37 @@ export function StandingsPage() {
                     </span>
                   </button>
                 </th>
-                {!isHistorical && (
-                  <>
-                    <SortableHeader
-                      columnKey="title_probability"
-                      label="Title"
-                      active={sort.key === "title_probability"}
-                      direction={sort.direction}
-                      onClick={handleSort}
-                    />
-                    <th>Top-4</th>
-                    <SortableHeader
-                      columnKey="relegation_probability"
-                      label="Relegation"
-                      active={sort.key === "relegation_probability"}
-                      direction={sort.direction}
-                      onClick={handleSort}
-                    />
-                    <SortableHeader
-                      columnKey="expected_position"
-                      label="Exp. pos."
-                      active={sort.key === "expected_position"}
-                      direction={sort.direction}
-                      onClick={handleSort}
-                      align="right"
-                    />
-                    <SortableHeader
-                      columnKey="expected_points"
-                      label="Exp. points"
-                      active={sort.key === "expected_points"}
-                      direction={sort.direction}
-                      onClick={handleSort}
-                      align="right"
-                    />
-                  </>
-                )}
+                <SortableHeader
+                  columnKey="title_probability"
+                  label="Title"
+                  active={sort.key === "title_probability"}
+                  direction={sort.direction}
+                  onClick={handleSort}
+                />
+                <th>Top-4</th>
+                <SortableHeader
+                  columnKey="relegation_probability"
+                  label="Relegation"
+                  active={sort.key === "relegation_probability"}
+                  direction={sort.direction}
+                  onClick={handleSort}
+                />
+                <SortableHeader
+                  columnKey="expected_position"
+                  label="Exp. pos."
+                  active={sort.key === "expected_position"}
+                  direction={sort.direction}
+                  onClick={handleSort}
+                  align="right"
+                />
+                <SortableHeader
+                  columnKey="expected_points"
+                  label="Exp. points"
+                  active={sort.key === "expected_points"}
+                  direction={sort.direction}
+                  onClick={handleSort}
+                  align="right"
+                />
               </tr>
             </thead>
             <tbody>
@@ -239,34 +236,28 @@ export function StandingsPage() {
                   <td className="num">
                     <strong>{row.points}</strong>
                   </td>
-                  {!isHistorical && (
-                    <>
-                      <td>
-                        {row.forecast && (
-                          <ProbabilityMeter probability={row.forecast.title_probability} tone="good" />
-                        )}
-                      </td>
-                      <td>
-                        {row.forecast && (
-                          <ProbabilityMeter probability={row.forecast.champions_league_probability} tone="good" />
-                        )}
-                      </td>
-                      <td>
-                        {row.forecast && (
-                          <ProbabilityMeter probability={row.forecast.relegation_probability} tone="critical" />
-                        )}
-                      </td>
-                      <td className="num">{row.forecast?.expected_position.toFixed(1)}</td>
-                      <td className="num">
-                        {row.forecast?.expected_points.toFixed(1)}
-                        {row.forecast && (
-                          <span className="points-range-inline">
-                            {row.forecast.points_p05.toFixed(0)}&ndash;{row.forecast.points_p95.toFixed(0)}
-                          </span>
-                        )}
-                      </td>
-                    </>
-                  )}
+                  <td>
+                    {row.forecast && <ProbabilityMeter probability={row.forecast.title_probability} tone="good" />}
+                  </td>
+                  <td>
+                    {row.forecast && (
+                      <ProbabilityMeter probability={row.forecast.champions_league_probability} tone="good" />
+                    )}
+                  </td>
+                  <td>
+                    {row.forecast && (
+                      <ProbabilityMeter probability={row.forecast.relegation_probability} tone="critical" />
+                    )}
+                  </td>
+                  <td className="num">{row.forecast?.expected_position.toFixed(1)}</td>
+                  <td className="num">
+                    {row.forecast?.expected_points.toFixed(1)}
+                    {row.forecast && (
+                      <span className="points-range-inline">
+                        {row.forecast.points_p05.toFixed(0)}&ndash;{row.forecast.points_p95.toFixed(0)}
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -274,9 +265,8 @@ export function StandingsPage() {
         </div>
       </div>
       <p className="table-caption">
-        {isHistorical
-          ? "Pick another matchweek above, or switch back to “Current” for the live forecast."
-          : `Click a column header (${Object.values(COLUMN_LABELS).join(", ")}) to sort by it.`}
+        Click a column header ({Object.values(COLUMN_LABELS).join(", ")}) to sort by it.
+        {isHistorical && " Pick another matchweek above, or switch back to “Current” for the live forecast."}
       </p>
     </div>
   );

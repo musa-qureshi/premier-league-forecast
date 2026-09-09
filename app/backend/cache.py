@@ -48,7 +48,14 @@ def get_forecast(force_refresh: bool = False) -> LiveForecast:
     global _cached_forecast
     with _lock:
         if _cached_forecast is None or force_refresh:
-            _cached_forecast = build_current_forecast()
+            # Passes the OUTGOING forecast's own matchweek history through
+            # to the new build, so already-computed matchweeks (which can
+            # never change - see live_forecast.py::_matchweek_forecasts's
+            # docstring) get reused instead of re-simulated on every
+            # refresh; only a genuinely newly-completed matchweek costs
+            # anything extra.
+            previous = _cached_forecast.matchweek_standings if _cached_forecast else None
+            _cached_forecast = build_current_forecast(previous_matchweek_forecasts=previous)
         return _cached_forecast
 
 
