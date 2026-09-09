@@ -60,6 +60,33 @@
   flex-wrap: wrap;
 }
 
+.matchweek-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.matchweek-picker-label {
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+}
+
+.matchweek-picker select {
+  border: 1px solid var(--border);
+  background: var(--surface-1);
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.86rem;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.matchweek-picker select:hover {
+  border-color: var(--series-1);
+}
+
 .refresh-status {
   display: flex;
   align-items: center;

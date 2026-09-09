@@ -141,6 +141,70 @@ class LeagueTableTracker:
         }
 
 
+def standings_by_matchweek(matches: pd.DataFrame, season: str) -> list[dict]:
+    """Reconstructs the table exactly as it stood after every COMPLETED
+    matchweek this season - the "history" the live forecast's matchweek
+    browser reads from. `matches` should be the season's full schedule
+    (played and not-yet-played), each row carrying the integer `Round`
+    column src/data/validate.py::load_openfootball_matches populates from
+    the source's "Matchday N" label.
+
+    Deliberately NOT a persisted/saved snapshot: the live data source
+    always returns the complete season-to-date match list on every fetch,
+    so every matchweek's final state is always fully recoverable by
+    replaying from scratch - recomputing here costs nothing meaningful
+    (this is the same lightweight sequential tracker used everywhere else
+    in this project, not the Monte Carlo simulator) and can never lose
+    history to e.g. a container restart wiping local disk.
+
+    A matchweek only appears in the result once every one of its fixtures
+    has been played - "the table after matchweek N" isn't well-defined
+    while N is still in progress. Returns `[]` if `matches` has no `Round`
+    column at all (true for any season sourced purely from the Kaggle
+    mirrors, which don't carry this field - see load_openfootball_matches).
+    """
+    if "Round" not in matches.columns:
+        return []
+
+    fixtures_per_round = matches.groupby("Round").size().to_dict()
+    played = matches.dropna(subset=["FTHG", "FTAG"]).sort_values("Date")
+
+    tracker = LeagueTableTracker()
+    played_per_round: dict[float, int] = {}
+    already_snapshotted: set[float] = set()
+    snapshots: list[dict] = []
+
+    # Date-batched, same as compute_league_table_features: every match on
+    # a shared date must see (and contribute to) an identical table state,
+    # regardless of row order.
+    for _, day_matches in played.groupby("Date", sort=True):
+        for _, row in day_matches.iterrows():
+            tracker.snapshot(row["HomeTeam"], row["AwayTeam"], season)
+        for _, row in day_matches.iterrows():
+            tracker.apply_result(row["HomeTeam"], row["AwayTeam"], row["FTHG"], row["FTAG"])
+            r = row["Round"]
+            if pd.isna(r):
+                continue
+            played_per_round[r] = played_per_round.get(r, 0) + 1
+
+        # After applying this whole date's results, snapshot any round
+        # that JUST became fully complete - checked here rather than only
+        # once at the end, since a round's fixtures can span several
+        # dates and this needs the state as it stood right when the last
+        # of them was played, not the season's final state.
+        for r, count in played_per_round.items():
+            if r not in already_snapshotted and count == fixtures_per_round.get(r):
+                already_snapshotted.add(r)
+                standings = tracker.current_standings()
+                df = pd.DataFrame(standings).T
+                df.index.name = "team"
+                df = df.sort_values(["points", "goal_difference"], ascending=False)
+                snapshots.append({"matchweek": int(r), "standings": df})
+
+    snapshots.sort(key=lambda s: s["matchweek"])
+    return snapshots
+
+
 def compute_league_table_features(matches: pd.DataFrame) -> pd.DataFrame:
     """Adds home_table_*/away_table_* columns to `matches`. `matches` must
     already be sorted chronologically by Date."""

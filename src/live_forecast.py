@@ -19,14 +19,14 @@ the same code paths already tested against historical data in Phases 2-8.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
 
 from src.data.ingest import download_json, load_config
 from src.data.validate import canonicalize_teams, load_openfootball_matches, load_team_name_map
-from src.features.league_table import LeagueTableTracker
+from src.features.league_table import LeagueTableTracker, standings_by_matchweek
 from src.models.poisson_model import DixonColesModel
 from src.simulation.engine import CurrentTableState, Fixture, simulate_final_tables
 from src.simulation.summary import summarize_simulation
@@ -61,6 +61,12 @@ class LiveForecast:
     points: pd.DataFrame               # (n_simulations, n_teams) simulated final points
     summary: pd.DataFrame              # per-team headline stats (title probability, etc.)
     model: DixonColesModel
+    # [] for simulate_historical_cutoff() - matches.parquet has no `Round`
+    # column (only the live openfootball source does), so there's nothing
+    # to compute matchweek history from. Populated for build_current_forecast()
+    # - see standings_by_matchweek()'s docstring for why this is recomputed
+    # from scratch every refresh rather than persisted between refreshes.
+    matchweek_standings: list[dict] = field(default_factory=list)
 
 
 def _forecast_from_matches(
@@ -157,6 +163,13 @@ def build_current_forecast(
         train, played, remaining, current_season, n_simulations, seed
     )
 
+    # Recomputed from scratch on every refresh, not persisted between
+    # refreshes - see standings_by_matchweek()'s docstring for why that's
+    # deliberate. `all_current` (not `played`) is passed because
+    # completeness-checking a matchweek needs to know about its
+    # not-yet-played fixtures too, not just the ones already done.
+    matchweek_standings = standings_by_matchweek(all_current, current_season)
+
     return LiveForecast(
         season=current_season,
         # tz="UTC", not a naive pd.Timestamp.now(): a naive timestamp
@@ -178,6 +191,7 @@ def build_current_forecast(
         points=points,
         summary=summary,
         model=model,
+        matchweek_standings=matchweek_standings,
     )
 
 
