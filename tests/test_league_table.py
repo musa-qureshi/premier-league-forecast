@@ -12,7 +12,7 @@ explicitly wants to avoid (see module docstring in league_table.py).
 import pandas as pd
 import pytest
 
-from src.features.league_table import LeagueTableTracker, compute_league_table_features
+from src.features.league_table import LeagueTableTracker, compute_league_table_features, standings_by_matchweek
 
 
 def _matches(rows: list[tuple]) -> pd.DataFrame:
@@ -20,6 +20,15 @@ def _matches(rows: list[tuple]) -> pd.DataFrame:
     df = pd.DataFrame(rows, columns=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "Season"])
     df["Date"] = pd.to_datetime(df["Date"])
     df["match_id"] = range(len(df))
+    return df
+
+
+def _matches_with_round(rows: list[tuple]) -> pd.DataFrame:
+    """rows: (date, home, away, fthg, ftag, round) - fthg/ftag may be None
+    for a not-yet-played fixture, matching load_openfootball_matches'
+    output shape for the live/current season."""
+    df = pd.DataFrame(rows, columns=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "Round"])
+    df["Date"] = pd.to_datetime(df["Date"])
     return df
 
 
@@ -168,3 +177,69 @@ class TestComputeLeagueTableFeatures:
         ]
         result = compute_league_table_features(_matches(rows))
         assert len(result) == 3
+
+
+class TestStandingsByMatchweek:
+    def test_returns_empty_without_a_round_column(self):
+        # Kaggle-sourced seasons have no "round" field at all (see
+        # load_openfootball_matches) - must degrade to "no history
+        # available" rather than raise.
+        rows = [("2023-08-12", "Arsenal", "Watford", 5, 0, "2023-24")]
+        assert standings_by_matchweek(_matches(rows), season="2023-24") == []
+
+    def test_one_complete_matchweek_produces_one_snapshot(self):
+        rows = [
+            ("2023-08-12", "Arsenal", "Watford", 3, 0, 1),
+            ("2023-08-12", "Chelsea", "Fulham", 1, 1, 1),
+        ]
+        result = standings_by_matchweek(_matches_with_round(rows), season="2023-24")
+        assert [s["matchweek"] for s in result] == [1]
+        standings = result[0]["standings"]
+        assert standings.loc["Arsenal", "points"] == 3
+        assert standings.loc["Chelsea", "points"] == 1
+
+    def test_matchweek_snapshot_is_cumulative(self):
+        rows = [
+            ("2023-08-12", "Arsenal", "Watford", 3, 0, 1),
+            ("2023-08-19", "Arsenal", "Chelsea", 1, 1, 2),
+        ]
+        result = standings_by_matchweek(_matches_with_round(rows), season="2023-24")
+        assert [s["matchweek"] for s in result] == [1, 2]
+        # Matchweek 2's table must include BOTH matchweeks' results, not
+        # just matchweek 2's own match - "the table after MW2" is always
+        # a running total, the way every real league table works.
+        mw2 = result[1]["standings"]
+        assert mw2.loc["Arsenal", "points"] == 4  # 3 (MW1 win) + 1 (MW2 draw)
+        assert mw2.loc["Arsenal", "played"] == 2
+
+    def test_incomplete_matchweek_is_excluded(self):
+        rows = [
+            ("2023-08-12", "Arsenal", "Watford", 3, 0, 1),
+            ("2023-08-12", "Chelsea", "Fulham", None, None, 1),  # not yet played
+        ]
+        result = standings_by_matchweek(_matches_with_round(rows), season="2023-24")
+        # Matchweek 1 has an unplayed fixture, so "the table after MW1"
+        # isn't well-defined yet - it must not appear at all.
+        assert result == []
+
+    def test_earlier_complete_matchweek_still_shown_even_if_a_later_one_is_not(self):
+        rows = [
+            ("2023-08-12", "Arsenal", "Watford", 3, 0, 1),
+            ("2023-08-19", "Arsenal", "Chelsea", 1, 1, 2),
+            ("2023-08-26", "Arsenal", "Fulham", None, None, 3),  # MW3 not played yet
+        ]
+        result = standings_by_matchweek(_matches_with_round(rows), season="2023-24")
+        assert [s["matchweek"] for s in result] == [1, 2]
+
+    def test_matchweek_completing_across_multiple_dates(self):
+        # A round's fixtures are often spread across a weekend (or, less
+        # often, rearranged onto a later date entirely) - completeness
+        # must be checked against ALL of a round's fixtures regardless of
+        # which date each one lands on, not assumed to finish same-day.
+        rows = [
+            ("2023-08-12", "Arsenal", "Watford", 3, 0, 1),
+            ("2023-08-13", "Chelsea", "Fulham", 1, 1, 1),  # same round, next day
+        ]
+        result = standings_by_matchweek(_matches_with_round(rows), season="2023-24")
+        assert [s["matchweek"] for s in result] == [1]
+        assert result[0]["standings"].loc["Chelsea", "points"] == 1

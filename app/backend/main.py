@@ -23,6 +23,7 @@ from app.backend.cache import DEFAULT_REFRESH_INTERVAL_HOURS, background_refresh
 from app.backend.schemas import (
     ForecastMeta,
     MatchPrediction,
+    MatchweekStandings,
     PositionDistribution,
     RemainingFixture,
     Scoreline,
@@ -142,6 +143,27 @@ def standings() -> list[dict]:
     forecast = get_forecast()
     df = forecast.standings.reset_index().rename(columns={"index": "team"})
     return df.to_dict(orient="records")
+
+
+@app.get("/standings/history", response_model=list[MatchweekStandings])
+def standings_history() -> list[dict]:
+    """The table exactly as it stood after every matchweek that's fully
+    completed so far this season - recomputed fresh on every cache
+    refresh from the live source's full season-to-date match list, not a
+    saved/persisted snapshot (see src/features/league_table.py::
+    standings_by_matchweek for why that's deliberate). Empty list for any
+    season with no matchweeks complete yet (or, in principle, a data
+    source with no round information)."""
+    forecast = get_forecast()
+    return [
+        {
+            "matchweek": entry["matchweek"],
+            "standings": entry["standings"].reset_index().rename(columns={"index": "team"}).to_dict(
+                orient="records"
+            ),
+        }
+        for entry in forecast.matchweek_standings
+    ]
 
 
 @app.get("/forecast", response_model=list[TeamForecast])

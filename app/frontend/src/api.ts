@@ -26,6 +26,11 @@ export interface TeamForecast {
   points_p95: number;
 }
 
+export interface MatchweekStandings {
+  matchweek: number;
+  standings: TeamStanding[];
+}
+
 export interface PositionDistribution {
   team: string;
   distribution: Record<string, number>;
@@ -87,6 +92,7 @@ async function postJSON<T>(path: string): Promise<T> {
 export const api = {
   meta: () => getJSON<ForecastMeta>("/meta"),
   standings: () => getJSON<TeamStanding[]>("/standings"),
+  standingsHistory: () => getJSON<MatchweekStandings[]>("/standings/history"),
   forecastAll: () => getJSON<TeamForecast[]>("/forecast"),
   teamForecast: (team: string) => getJSON<TeamForecast>(`/teams/${encodeURIComponent(team)}`),
   positionDistribution: (team: string) =>

@@ -432,6 +432,27 @@ honest, not a flaw — a well-calibrated forecast this early should be
 uncertain, and keeps updating automatically as more matches feed into the
 same pipeline.
 
+### Matchweek history
+
+`GET /standings/history` (backed by `src/features/league_table.py::
+standings_by_matchweek`) lets the frontend show the table exactly as it
+stood after any matchweek that's fully completed so far, via a dropdown
+on the standings page. The live data source
+(`openfootball/football.json`) tags every match with a "round" field
+("Matchday N"), and always returns the complete season-to-date match list
+on every fetch — so instead of saving a snapshot each time a matchweek
+finishes (which would need somewhere durable to write it, a real problem
+on Render's free tier: the container's filesystem is wiped on every cold
+restart, which happens routinely after 15 minutes of inactivity), the
+whole history is simply recomputed from scratch on every cache refresh by
+replaying the sequential table tracker up to each complete round. This
+costs nothing meaningful (a few hundred matches through a Python dict,
+not the Monte Carlo simulator) and can never lose history to a restart.
+A matchweek only appears once every one of its fixtures has a result —
+"the table after matchweek N" isn't well-defined while N is still being
+played. Only available for the live current season: the Kaggle-sourced
+historical seasons have no round field at all.
+
 ## Hyperparameter tuning (Phase 10)
 
 `src/evaluation/tuning.py` implements nested validation: all 33 seasons

@@ -17,6 +17,7 @@ data or network access.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +28,19 @@ CONFIG_PATH = PROJECT_ROOT / "configs" / "data.yaml"
 
 # Required for every match; a source row missing any of these is dropped.
 CORE_COLUMNS = ["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "FTR"]
+
+
+def _parse_matchday(round_label: str | None) -> int | None:
+    """openfootball's "round" field is a free-text label - "Matchday 7" for
+    a normal league round. Pulls out the trailing integer defensively
+    (returns None rather than raising for a missing/unrecognized label,
+    e.g. a cup-competition round like "Final") - this is a nice-to-have
+    enrichment for the matchweek-history feature, not something that
+    should ever break parsing a match that has everything else it needs."""
+    if not round_label:
+        return None
+    m = re.search(r"(\d+)\s*$", str(round_label))
+    return int(m.group(1)) if m else None
 
 # Kept when present, but not required - older seasons (pre-2000) lack most
 # of these in football-data.co.uk-derived data.
@@ -113,6 +127,17 @@ def load_openfootball_matches(files: list[Path], completed_only: bool = True) ->
     have "score" as a bare [home, away] list with no half-time breakdown at
     all (confirmed by inspecting the raw 2025-26 file - not a hypothetical
     edge case). Both are handled here explicitly.
+
+    Each match also carries a "round" field (e.g. "Matchday 7"), parsed
+    into an integer `Round` column via `_parse_matchday`. This is what
+    lets the live forecast reconstruct "the table after matchweek N"
+    on demand (src/features/league_table.py::standings_by_matchweek)
+    without ever needing to separately save a snapshot: this source
+    always returns the full season-to-date match list on every fetch, so
+    the whole matchweek history is recoverable from one fetch, every time.
+    Kaggle's historical sources have no equivalent field, so this only
+    ever gets populated for openfootball-sourced data (in practice: the
+    live current season) - `Round` is simply absent/NaN elsewhere.
     """
     rows = []
     for f in files:
@@ -137,6 +162,7 @@ def load_openfootball_matches(files: list[Path], completed_only: bool = True) ->
                 "FTR": None,  # always recomputed from goals downstream, see derive_result
                 "HTHG": ht[0] if ht else None,
                 "HTAG": ht[1] if ht else None,
+                "Round": _parse_matchday(m.get("round")),
             })
     return pd.DataFrame(rows)
 

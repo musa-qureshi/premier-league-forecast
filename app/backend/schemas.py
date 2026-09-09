@@ -17,6 +17,13 @@ class TeamStanding(BaseModel):
     goal_difference: int
 
 
+class MatchweekStandings(BaseModel):
+    matchweek: int = Field(..., description="Matchday number (1-indexed)")
+    standings: list[TeamStanding] = Field(
+        ..., description="The table exactly as it stood once this matchweek's fixtures had all been played"
+    )
+
+
 class TeamForecast(BaseModel):
     team: str
     title_probability: float = Field(..., description="Simulated probability of finishing 1st")

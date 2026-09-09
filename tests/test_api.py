@@ -62,11 +62,21 @@ def _toy_forecast() -> LiveForecast:
         {"HomeTeam": "Bravo", "AwayTeam": "Charlie", "expected_home_goals": 1.2, "expected_away_goals": 1.1},
     ])
 
+    matchweek_1_standings = pd.DataFrame({
+        "points": {"Alpha": 3, "Bravo": 0, "Charlie": 1, "Delta": 1},
+        "played": {t: 1 for t in teams},
+        "goals_for": {"Alpha": 2, "Bravo": 0, "Charlie": 1, "Delta": 1},
+        "goals_against": {"Alpha": 0, "Bravo": 2, "Charlie": 1, "Delta": 1},
+        "goal_difference": {"Alpha": 2, "Bravo": -2, "Charlie": 0, "Delta": 0},
+    })
+    matchweek_1_standings.index.name = "team"
+
     return LiveForecast(
         season="2099-00", generated_at=pd.Timestamp("2099-01-01"),
         n_simulations=500, n_played=12, n_remaining=2,
         standings=standings, remaining_fixtures=remaining_fixtures,
         positions=positions, points=points, summary=summary, model=model,
+        matchweek_standings=[{"matchweek": 1, "standings": matchweek_1_standings}],
     )
 
 
@@ -105,6 +115,27 @@ class TestStandings:
         body = client.get("/standings").json()
         points = [row["points"] for row in body]
         assert points == sorted(points, reverse=True)
+
+
+class TestStandingsHistory:
+    def test_returns_one_entry_per_matchweek(self, client):
+        response = client.get("/standings/history")
+        assert response.status_code == 200
+        body = response.json()
+        assert [entry["matchweek"] for entry in body] == [1]
+
+    def test_matchweek_standings_shape_matches_current_standings(self, client):
+        body = client.get("/standings/history").json()
+        mw1 = body[0]["standings"]
+        assert {row["team"] for row in mw1} == {"Alpha", "Bravo", "Charlie", "Delta"}
+        alpha = next(row for row in mw1 if row["team"] == "Alpha")
+        assert alpha["points"] == 3
+        assert alpha["played"] == 1
+
+    def test_empty_when_no_matchweeks_complete(self, client):
+        main_module.get_forecast().matchweek_standings = []
+        response = client.get("/standings/history")
+        assert response.json() == []
 
 
 class TestForecastAll:
