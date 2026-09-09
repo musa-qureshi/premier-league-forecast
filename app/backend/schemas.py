@@ -17,13 +17,6 @@ class TeamStanding(BaseModel):
     goal_difference: int
 
 
-class MatchweekStandings(BaseModel):
-    matchweek: int = Field(..., description="Matchday number (1-indexed)")
-    standings: list[TeamStanding] = Field(
-        ..., description="The table exactly as it stood once this matchweek's fixtures had all been played"
-    )
-
-
 class TeamForecast(BaseModel):
     team: str
     title_probability: float = Field(..., description="Simulated probability of finishing 1st")
@@ -37,6 +30,20 @@ class TeamForecast(BaseModel):
     median_points: float
     points_p05: float = Field(..., description="5th percentile of simulated final points")
     points_p95: float = Field(..., description="95th percentile of simulated final points")
+
+
+class MatchweekStandings(BaseModel):
+    matchweek: int = Field(..., description="Matchday number (1-indexed)")
+    standings: list[TeamStanding] = Field(
+        ..., description="The table exactly as it stood once this matchweek's fixtures had all been played"
+    )
+    forecast: list[TeamForecast] = Field(
+        ...,
+        description=(
+            "What the model would have simulated right after this matchweek finished - refit and "
+            "re-run using only data available at that point, not the current forecast replayed backward"
+        ),
+    )
 
 
 class PositionDistribution(BaseModel):

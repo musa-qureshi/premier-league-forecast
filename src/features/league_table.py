@@ -177,7 +177,7 @@ def standings_by_matchweek(matches: pd.DataFrame, season: str) -> list[dict]:
     # Date-batched, same as compute_league_table_features: every match on
     # a shared date must see (and contribute to) an identical table state,
     # regardless of row order.
-    for _, day_matches in played.groupby("Date", sort=True):
+    for day, day_matches in played.groupby("Date", sort=True):
         for _, row in day_matches.iterrows():
             tracker.snapshot(row["HomeTeam"], row["AwayTeam"], season)
         for _, row in day_matches.iterrows():
@@ -199,7 +199,15 @@ def standings_by_matchweek(matches: pd.DataFrame, season: str) -> list[dict]:
                 df = pd.DataFrame(standings).T
                 df.index.name = "team"
                 df = df.sort_values(["points", "goal_difference"], ascending=False)
-                snapshots.append({"matchweek": int(r), "standings": df})
+                # `cutoff_date`: the date `day` itself, not some derived
+                # value - everything up to and including this date is
+                # "played as of this matchweek", everything strictly
+                # after is "remaining" - the same played/remaining split
+                # simulate_historical_cutoff() uses, letting
+                # src/live_forecast.py refit and re-simulate AS OF this
+                # exact point for the "model results" this snapshot needs
+                # to carry alongside the table (see _matchweek_forecasts).
+                snapshots.append({"matchweek": int(r), "standings": df, "cutoff_date": day})
 
     snapshots.sort(key=lambda s: s["matchweek"])
     return snapshots

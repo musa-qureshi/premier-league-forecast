@@ -147,18 +147,25 @@ def standings() -> list[dict]:
 
 @app.get("/standings/history", response_model=list[MatchweekStandings])
 def standings_history() -> list[dict]:
-    """The table exactly as it stood after every matchweek that's fully
-    completed so far this season - recomputed fresh on every cache
-    refresh from the live source's full season-to-date match list, not a
-    saved/persisted snapshot (see src/features/league_table.py::
-    standings_by_matchweek for why that's deliberate). Empty list for any
-    season with no matchweeks complete yet (or, in principle, a data
-    source with no round information)."""
+    """The table AND the model's own simulated forecast exactly as they
+    stood after every matchweek that's fully completed so far this
+    season - not the current forecast replayed backward, but a real
+    refit + re-simulation using only data available at that point (see
+    src/live_forecast.py::_matchweek_forecasts). Recomputed on cache
+    refresh, not persisted between refreshes (see src/features/
+    league_table.py::standings_by_matchweek's docstring for why); already-
+    computed matchweeks are cheaply reused across refreshes rather than
+    re-simulated, since a completed matchweek's forecast never changes.
+    Empty list for any season with no matchweeks complete yet (or, in
+    principle, a data source with no round information)."""
     forecast = get_forecast()
     return [
         {
             "matchweek": entry["matchweek"],
             "standings": entry["standings"].reset_index().rename(columns={"index": "team"}).to_dict(
+                orient="records"
+            ),
+            "forecast": entry["summary"].reset_index().rename(columns={"index": "team"}).to_dict(
                 orient="records"
             ),
         }

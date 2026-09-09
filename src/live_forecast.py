@@ -123,9 +123,106 @@ def _forecast_from_matches(
     return standings, remaining_fixtures, positions, points, summary, model
 
 
+def _build_training_set(historical: pd.DataFrame, played: pd.DataFrame) -> pd.DataFrame:
+    """Historical matches plus this season's matches played so far,
+    chronologically sorted - the exact training set `DixonColesModel`
+    should fit on. Pulled out as its own function specifically so
+    `_matchweek_forecasts()` (below) can build a DIFFERENT training set
+    per matchweek (only played-as-of-that-matchweek, not everything played
+    to date) without duplicating this concat/column-alignment logic."""
+    return pd.concat(
+        [historical, played[historical.columns.intersection(played.columns)]], ignore_index=True
+    ).sort_values("Date").reset_index(drop=True)
+
+
+MATCHWEEK_FORECAST_N_SIMULATIONS = 10_000
+
+
+def _matchweek_forecasts(
+    historical: pd.DataFrame,
+    all_current: pd.DataFrame,
+    season: str,
+    seed: int | None,
+    cached: dict[int, dict] | None = None,
+) -> list[dict]:
+    """For every matchweek that's fully complete so far this season,
+    reruns the ENTIRE forecast pipeline (refit the model, re-simulate)
+    using only data that would genuinely have been available right after
+    that matchweek finished - not just the final table
+    (standings_by_matchweek() already covers that), but the model's own
+    title/top-4/relegation probabilities AS THEY WOULD HAVE LOOKED at that
+    point in the season. This is what makes browsing matchweek history
+    show "what did the model think back then", not just "what was the
+    score", matching how the live forecast page frames every number as a
+    simulated estimate rather than a fact.
+
+    Leakage guard, same shape as simulate_historical_cutoff()'s: for
+    matchweek N, `played` is capped at Date <= that matchweek's
+    standings_by_matchweek()-reported `cutoff_date`, and `remaining` is
+    everything after it - even fixtures that have SINCE been played and
+    have a real score by now must be treated as future/unknown for this
+    matchweek's own forecast, exactly the way they'd have been unknown at
+    the time. Reuses _forecast_from_matches() - the same core
+    build_current_forecast() and simulate_historical_cutoff() both call -
+    so this isn't a parallel, separately-maintained forecasting path.
+
+    `cached`, keyed by matchweek number, lets a caller (cache.py, across
+    background refreshes) skip recomputing a matchweek whose forecast it
+    already has: unlike the "current" forecast, a completed matchweek's
+    "as of then" forecast can never change once computed - it depends
+    only on data through a fixed past point, not on anything played
+    since. Without this, EVERY refresh would re-simulate EVERY complete
+    matchweek from scratch, an unnecessary cost that only grows as a
+    season progresses (confirmed by direct benchmarking: even at a
+    reduced 10,000 simulations, 3 early-season matchweeks - each with
+    ~350+ remaining fixtures still to simulate - took ~6s combined; a
+    mid-season refresh recomputing every one of 15-20 already-known
+    matchweeks for no new information would take real, wasted time on
+    every single refresh instead of just the one genuinely new matchweek).
+
+    Runs at MATCHWEEK_FORECAST_N_SIMULATIONS (10,000), not the live
+    forecast's usual 50,000 - a deliberate, separate reduction from the
+    "current" forecast's simulation count: this is a supplementary,
+    once-per-matchweek historical view, not the headline number, and
+    10,000 simulations (the same scale Phase 8/13's validation and
+    calibration backtests already relied on) is still a large, stable
+    Monte Carlo sample.
+    """
+    cached = cached or {}
+    snapshots = standings_by_matchweek(all_current, season)
+    results = []
+    for entry in snapshots:
+        mw = entry["matchweek"]
+        if mw in cached:
+            results.append(cached[mw])
+            continue
+
+        cutoff = entry["cutoff_date"]
+        played = all_current[(all_current["Date"] <= cutoff) & all_current["FTHG"].notna()].copy()
+        remaining = all_current[all_current["Date"] > cutoff].copy().sort_values("Date")
+        played["FTHG"] = played["FTHG"].astype(int)
+        played["FTAG"] = played["FTAG"].astype(int)
+        played["Season"] = season
+
+        train = _build_training_set(historical, played)
+        _, _, _, _, summary, _ = _forecast_from_matches(
+            train, played, remaining, season, MATCHWEEK_FORECAST_N_SIMULATIONS, seed
+        )
+
+        results.append({"matchweek": mw, "standings": entry["standings"], "summary": summary})
+    return results
+
+
 def build_current_forecast(
-    n_simulations: int = DEFAULT_N_SIMULATIONS, seed: int | None = 0
+    n_simulations: int = DEFAULT_N_SIMULATIONS,
+    seed: int | None = 0,
+    previous_matchweek_forecasts: list[dict] | None = None,
 ) -> LiveForecast:
+    """`previous_matchweek_forecasts`: the prior LiveForecast's own
+    `matchweek_standings` (if any), threaded through by app/backend/
+    cache.py across refreshes purely as a cache - see
+    _matchweek_forecasts()'s docstring for why a completed matchweek's
+    forecast never needs to be recomputed once it exists."""
     config = load_config()
     live = config["live_source"]
     current_season = live["current_season"]
@@ -155,9 +252,7 @@ def build_current_forecast(
     played["Season"] = current_season
 
     historical = pd.read_parquet(PROJECT_ROOT / "data" / "processed" / "matches.parquet")
-    train = pd.concat(
-        [historical, played[historical.columns.intersection(played.columns)]], ignore_index=True
-    ).sort_values("Date").reset_index(drop=True)
+    train = _build_training_set(historical, played)
 
     standings, remaining_fixtures, positions, points, summary, model = _forecast_from_matches(
         train, played, remaining, current_season, n_simulations, seed
@@ -168,7 +263,8 @@ def build_current_forecast(
     # deliberate. `all_current` (not `played`) is passed because
     # completeness-checking a matchweek needs to know about its
     # not-yet-played fixtures too, not just the ones already done.
-    matchweek_standings = standings_by_matchweek(all_current, current_season)
+    cached_matchweeks = {e["matchweek"]: e for e in (previous_matchweek_forecasts or [])}
+    matchweek_standings = _matchweek_forecasts(historical, all_current, current_season, seed, cached_matchweeks)
 
     return LiveForecast(
         season=current_season,

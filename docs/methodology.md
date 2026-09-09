@@ -434,20 +434,39 @@ same pipeline.
 
 ### Matchweek history
 
-`GET /standings/history` (backed by `src/features/league_table.py::
-standings_by_matchweek`) lets the frontend show the table exactly as it
-stood after any matchweek that's fully completed so far, via a dropdown
-on the standings page. The live data source
+`GET /standings/history` lets the frontend show, for any matchweek that's
+fully completed so far, both the table AND the model's own simulated
+forecast exactly as they stood right after that matchweek finished - via
+a dropdown on the standings page. The live data source
 (`openfootball/football.json`) tags every match with a "round" field
 ("Matchday N"), and always returns the complete season-to-date match list
 on every fetch — so instead of saving a snapshot each time a matchweek
 finishes (which would need somewhere durable to write it, a real problem
 on Render's free tier: the container's filesystem is wiped on every cold
 restart, which happens routinely after 15 minutes of inactivity), the
-whole history is simply recomputed from scratch on every cache refresh by
-replaying the sequential table tracker up to each complete round. This
-costs nothing meaningful (a few hundred matches through a Python dict,
-not the Monte Carlo simulator) and can never lose history to a restart.
+whole history is recomputed from the live source on every cache refresh.
+
+Two genuinely different things get recomputed, at two very different
+costs:
+
+- **The table** (`src/features/league_table.py::standings_by_matchweek`):
+  replaying the same lightweight sequential tracker used everywhere else
+  in this project up to each complete round. Costs nothing meaningful (a
+  few hundred matches through a Python dict, not the Monte Carlo
+  simulator) and can never lose history to a restart.
+- **The forecast** (`src/live_forecast.py::_matchweek_forecasts`): a
+  genuine refit of the Poisson/Dixon-Coles model plus a full Monte Carlo
+  re-simulation, using only data that would have been available right
+  after that matchweek - not the current forecast replayed backward.
+  This is real, repeated work (confirmed by direct benchmarking: ~2s per
+  matchweek at a reduced 10,000 simulations, given how many remaining
+  fixtures an early matchweek still has to simulate), so unlike the
+  table, it's cached ACROSS refreshes at the `app/backend/cache.py`
+  level: a completed matchweek's forecast never changes once computed
+  (it depends only on fixed past data), so each refresh only pays the
+  simulation cost for a matchweek that just newly became complete, not
+  for every matchweek all over again.
+
 A matchweek only appears once every one of its fixtures has a result —
 "the table after matchweek N" isn't well-defined while N is still being
 played. Only available for the live current season: the Kaggle-sourced
